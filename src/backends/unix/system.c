@@ -57,6 +57,10 @@ qboolean stdin_active = true;
 // Terminal supports colors
 static qboolean color_active = false;
 
+#ifdef MISTER_HYBRID
+#include "../mister/mister_port.h"
+#endif
+
 // Console logfile
 extern FILE	*logfile;
 
@@ -96,6 +100,10 @@ Sys_Error(const char *error, ...)
 	va_end(argptr);
 	fprintf(stderr, "Error: %s\n", string);
 
+#ifdef MISTER_HYBRID
+	MiSTer_ShowError(string);
+	exit(MiSTer_ExitCode());
+#endif
 	exit(1);
 }
 
@@ -121,6 +129,9 @@ Sys_Quit(void)
 
 	printf("------------------------------------\n");
 
+#ifdef MISTER_HYBRID
+	exit(MiSTer_ExitCode());
+#endif
 	exit(0);
 }
 

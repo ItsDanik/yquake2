@@ -817,6 +817,57 @@ CL_UpdateWindowedMouse(void)
 	}
 }
 
+#ifdef MISTER_HYBRID
+/*
+ * The OSD's Cheats page (core/YQuake2.sv): the switches go to the game's
+ * library as the cvar mister_cheats, which it applies every frame
+ * (MiSTer_Cheats() in g_main.c of each game); a trigger is the game's
+ * command, sent while a level of a single player game runs and dropped
+ * otherwise.
+ */
+static void
+CL_MiSTerCheats(void)
+{
+	static cvar_t *cheats;
+	qboolean level;
+	int bits;
+
+	level = cls.state == ca_active && Com_ServerState() == 2 /* ss_game */ &&
+		!Cvar_VariableValue("deathmatch") && !Cvar_VariableValue("coop");
+	bits = MiSTer_Cheats(level);
+
+	if (!cheats)
+	{
+		cheats = Cvar_Get("mister_cheats", "0", 0);
+	}
+
+	if ((int)cheats->value != (bits & MISTER_CHEAT_SWITCHES))
+	{
+		Cvar_Set("mister_cheats", va("%d", bits & MISTER_CHEAT_SWITCHES));
+	}
+
+	if (bits & MISTER_CHEAT_GIVE)
+	{
+		Cbuf_AddText("cmd give all\n");
+	}
+
+	if (bits & MISTER_CHEAT_QUAD)
+	{
+		Cbuf_AddText("cmd give quad damage\n");
+	}
+
+	if (bits & MISTER_CHEAT_INVULN)
+	{
+		Cbuf_AddText("cmd give invulnerability\n");
+	}
+
+	if (bits & MISTER_CHEAT_NEXT)
+	{
+		Cbuf_AddText("cmd mister_nextlevel\n");
+	}
+}
+#endif
+
 void
 CL_Frame(int packetdelta, int renderdelta, int timedelta, qboolean packetframe, qboolean renderframe)
 {
@@ -876,7 +927,12 @@ CL_Frame(int packetdelta, int renderdelta, int timedelta, qboolean packetframe, 
 	{
 		CL_ReadPackets();
 		CL_UpdateWindowedMouse();
+		MISTER_MARK(MISTER_T_INPUT);
 		IN_Update();
+		MISTER_MARK(MISTER_T_CLIENT);
+#ifdef MISTER_HYBRID
+		CL_MiSTerCheats();
+#endif
 		Cbuf_Execute();
 		CL_FixCvarCheats();
 
@@ -931,7 +987,9 @@ CL_Frame(int packetdelta, int renderdelta, int timedelta, qboolean packetframe, 
 		}
 
 		/* update audio */
+		MISTER_MARK(MISTER_T_SOUND);
 		S_Update(cl.refdef.vieworg, cl.v_forward, cl.v_right, cl.v_up);
+		MISTER_MARK(MISTER_T_CLIENT);
 
 		/* advance local effects for next frame */
 		CL_RunDLights();

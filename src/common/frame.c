@@ -25,6 +25,9 @@
  */
 
 #include "header/common.h"
+#ifdef MISTER_HYBRID
+void Key_MiSTerLayout(void); /* client/cl_keyboard.c */
+#endif
 #include <setjmp.h>
 
 cvar_t *developer;
@@ -173,6 +176,22 @@ Qcommon_Mainloop(void)
 	/* The mainloop. The legend. */
 	while (1)
 	{
+#ifdef MISTER_HYBRID
+		/* One frame per field of the core, and the core's
+		   field counter is the clock: wait until it has
+		   taken the last frame. */
+		unsigned fields = MiSTer_WaitFrame();
+
+		if (fields)
+		{
+			newtime = Sys_Microseconds();
+			curtime = (int)(newtime / 1000ll);
+			oldtime = newtime;
+
+			Qcommon_Frame(MiSTer_FieldsToUsec(fields));
+			continue;
+		}
+#endif
 #ifndef DEDICATED_ONLY
 		if (!cl_timedemo->value)
 		{
@@ -217,6 +236,12 @@ Qcommon_Mainloop(void)
 
 void Qcommon_ExecConfigs(qboolean gameStartUp)
 {
+#if defined(MISTER_HYBRID) && !defined(DEDICATED_ONLY)
+	/* The layout this game's config.cfg was written with, 0 without one: the
+	   one of the game before (baseq2, then a mission pack) must not count, as
+	   default.cfg unbinds everything */
+	Cbuf_AddText("set mister_padlayout 0\n");
+#endif
 	Cbuf_AddText("exec default.cfg\n");
 	Cbuf_AddText("exec yq2.cfg\n");
 	Cbuf_AddText("exec config.cfg\n");
@@ -229,6 +254,10 @@ void Qcommon_ExecConfigs(qboolean gameStartUp)
 	}
 
 	Cbuf_Execute();
+
+#if defined(MISTER_HYBRID) && !defined(DEDICATED_ONLY)
+	Key_MiSTerLayout();
+#endif
 }
 
 static qboolean checkForHelp(int argc, char **argv)
@@ -627,7 +656,12 @@ Qcommon_Frame(int usec)
 	clienttimedelta += usec;
 	servertimedelta += usec;
 
+#ifdef MISTER_HYBRID
+	// Paced by the core: every pass of the main loop is a frame.
+	if (!cl_timedemo->value && !MiSTer_Paced())
+#else
 	if (!cl_timedemo->value)
+#endif
 	{
 		if (cl_async->value)
 		{
@@ -681,7 +715,9 @@ Qcommon_Frame(int usec)
 
 	// Run the serverframe.
 	if (packetframe) {
+		MISTER_MARK(MISTER_T_SERVER);
 		SV_Frame(servertimedelta);
+		MISTER_MARK(MISTER_T_OTHER);
 		servertimedelta = 0;
 	}
 
@@ -694,7 +730,9 @@ Qcommon_Frame(int usec)
 
 	// Run the client frame.
 	if (packetframe || renderframe) {
+		MISTER_MARK(MISTER_T_CLIENT);
 		CL_Frame(packetdelta, renderdelta, clienttimedelta, packetframe, renderframe);
+		MISTER_MARK(MISTER_T_OTHER);
 		clienttimedelta = 0;
 	}
 

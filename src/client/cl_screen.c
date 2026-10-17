@@ -1068,8 +1068,14 @@ SCR_ExecuteLayoutString(char *s)
 {
 	int x, y;
 	float scale;
+	int hud_top = 0, hud_bottom = viddef.height;
 
 	scale = SCR_GetHUDScale();
+#ifdef MISTER_HYBRID
+	/* "yt" and "yb" are from the HUD margins of the OSD at 240 lines: the
+	   status bar over the view, the margin above the bottom edge */
+	MiSTer_HudRows(viddef.height, &hud_top, &hud_bottom);
+#endif
 
 	if ((cls.state != ca_active) || !cl.refresh_prepped)
 	{
@@ -1114,14 +1120,14 @@ SCR_ExecuteLayoutString(char *s)
 		if (!strcmp(token, "yt"))
 		{
 			token = COM_Parse(&s);
-			y = scale * (int)strtol(token, (char **)NULL, 10);
+			y = hud_top + scale * (int)strtol(token, (char **)NULL, 10);
 			continue;
 		}
 
 		if (!strcmp(token, "yb"))
 		{
 			token = COM_Parse(&s);
-			y = viddef.height + scale * (int)strtol(token, (char **)NULL, 10);
+			y = hud_bottom + scale * (int)strtol(token, (char **)NULL, 10);
 			continue;
 		}
 

@@ -411,6 +411,100 @@ ExitLevel(void)
 	gibsthisframe = 0;
 }
 
+#ifdef MISTER_HYBRID
+/*
+ * MiSTer hybrid core: the OSD's Cheats page (core/YQuake2.sv of the YQuake2
+ * core). The engine puts its switches into the cvar mister_cheats (1 god
+ * mode, 2 no clipping, 4 invisible to monsters, 8 infinite ammo), and they
+ * are applied here every frame, in single player only: one that is on holds
+ * through saved games and level changes, one that is off is cleared (also
+ * what the console's "god" and the like set). Infinite ammo is dmflags'
+ * DF_INFINITE_AMMO, which the weapons honour in single player as well. The
+ * triggers are commands: "give", and mister_nextlevel (g_cmds.c), which
+ * needs the level the player came from.
+ */
+char mister_prevmap[MAX_QPATH];
+static char mister_map[MAX_QPATH];
+
+static void
+MiSTer_Cheats(void)
+{
+	static cvar_t *cheats;
+	int bits, i;
+	qboolean ammo;
+	edict_t *ent;
+
+	if (strcmp(level.mapname, mister_map) != 0)
+	{
+		Q_strlcpy(mister_prevmap, mister_map, sizeof(mister_prevmap));
+		Q_strlcpy(mister_map, level.mapname, sizeof(mister_map));
+	}
+
+	if (!cheats)
+	{
+		cheats = gi.cvar("mister_cheats", "0", 0);
+	}
+
+	if (deathmatch->value || coop->value)
+	{
+		return;
+	}
+
+	bits = (int)cheats->value;
+	ammo = ((int)dmflags->value & DF_INFINITE_AMMO) != 0;
+
+	if (ammo != ((bits & 8) != 0))
+	{
+		gi.cvar_forceset("dmflags", va("%i", (int)dmflags->value ^ DF_INFINITE_AMMO));
+	}
+
+	if (level.intermissiontime)
+	{
+		return;
+	}
+
+	for (i = 1; i <= game.maxclients; i++)
+	{
+		ent = &g_edicts[i];
+
+		if (!ent->inuse || !ent->client)
+		{
+			continue;
+		}
+
+		if (bits & 1)
+		{
+			ent->flags |= FL_GODMODE;
+		}
+		else
+		{
+			ent->flags &= ~FL_GODMODE;
+		}
+
+		if (bits & 4)
+		{
+			ent->flags |= FL_NOTARGET;
+		}
+		else
+		{
+			ent->flags &= ~FL_NOTARGET;
+		}
+
+		if (bits & 2)
+		{
+			if ((ent->health > 0) && !ent->deadflag)
+			{
+				ent->movetype = MOVETYPE_NOCLIP;
+			}
+		}
+		else if (ent->movetype == MOVETYPE_NOCLIP)
+		{
+			ent->movetype = MOVETYPE_WALK;
+		}
+	}
+}
+#endif
+
 /*
  * Advances the world by 0.1 seconds
  */
@@ -422,6 +516,10 @@ G_RunFrame(void)
 
 	level.framenum++;
 	level.time = level.framenum * FRAMETIME;
+
+#ifdef MISTER_HYBRID
+	MiSTer_Cheats();
+#endif
 
 	gibsthisframe = 0;
 	debristhisframe = 0;

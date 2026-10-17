@@ -551,6 +551,14 @@ Con_DrawNotify(void)
 
 	v = 0;
 	scale = SCR_GetConsoleScale();
+#ifdef MISTER_HYBRID
+	{
+		/* at 240 lines the HUD (Top) margin of the OSD */
+		int bottom;
+
+		MiSTer_HudRows(viddef.height, &v, &bottom);
+	}
+#endif
 
 	for (i = con.current - NUM_CON_TIMES + 1; i <= con.current; i++)
 	{

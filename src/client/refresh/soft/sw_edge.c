@@ -938,6 +938,8 @@ static void
 D_SolidSurf (entity_t *currententity, surf_t *s)
 {
 	float len1, len2, mipadjust;
+	drawsurf_t build;
+	qboolean rebuild;
 
 	if (s->insubmodel)
 	{
@@ -965,16 +967,19 @@ D_SolidSurf (entity_t *currententity, surf_t *s)
 	miplevel = D_MipLevelForScale(s->nearzi * scale_for_mip * mipadjust);
 
 	// FIXME: make this passed in to D_CacheSurface
-	pcurrentcache = D_CacheSurface (currententity, pface, miplevel);
+	// the block is drawn by the job of the spans, on either thread
+	pcurrentcache = D_CacheSurfaceDeferred (currententity, pface, miplevel, &build, &rebuild);
 
 	cacheblock = (pixel_t *)pcurrentcache->data;
 	cachewidth = pcurrentcache->width;
 
 	D_CalcGradients (pface, s->d_ziorigin, s->d_zistepu, s->d_zistepv);
 
-	D_DrawSpansPow2 (s->spans, s->d_ziorigin, s->d_zistepu, s->d_zistepv);
-
-	D_DrawZSpans (s->spans, s->d_ziorigin, s->d_zistepu, s->d_zistepv);
+	// the cache block, the texture and the z on either thread
+	// (D_DrawSurfaces)
+	pcurrentcache->jobs_round = r_jobs_round;
+	D_DrawSolidSpans (s->spans, s->d_ziorigin, s->d_zistepu, s->d_zistepv,
+		rebuild ? &build : NULL);
 
 	if (s->insubmodel)
 	{
@@ -1038,6 +1043,10 @@ D_DrawSurfaces (entity_t *currententity, const surf_t *surface)
 	{
 		surf_t *s;
 
+		// the texture spans of the solid surfaces are drawn by two
+		// threads (sw_jobs.c). No two surfaces share a pixel.
+		R_JobsBegin();
+
 		for (s = &surfaces[1] ; s<surface ; s++)
 		{
 			if (!s->spans)
@@ -1054,6 +1063,12 @@ D_DrawSurfaces (entity_t *currententity, const surf_t *surface)
 			else if (s->flags & SURF_DRAWTURB)
 				D_TurbulentSurf (s);
 		}
+
+		// the frame and the z buffer are complete when this returns
+		R_JobsFinish();
+#ifdef MISTER_HYBRID
+		D_CheckSolidSpans(true);
+#endif
 	}
 	else
 		D_DrawflatSurfaces (surface);

@@ -30,13 +30,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 int				r_amodels_drawn;
 
-affinetridesc_t	r_affinetridesc;
+R_THREAD affinetridesc_t	r_affinetridesc;
 
 static vec3_t	r_plightvec;
 static vec3_t	r_lerp_frontv, r_lerp_backv, r_lerp_move;
 
 static light3_t	r_ambientlight;
-int		r_aliasblendcolor;
+R_THREAD int		r_aliasblendcolor;
 static vec3_t		r_shadelight;
 
 
@@ -47,7 +47,7 @@ static float	aliastransform[3][4];
 static float	aliasworldtransform[3][4];
 static float	aliasoldworldtransform[3][4];
 
-static float	s_ziscale;
+static R_THREAD float	s_ziscale;
 static vec3_t	s_alias_forward, s_alias_right, s_alias_up;
 
 
@@ -232,41 +232,28 @@ R_AliasTransformVector(const vec3_t in, vec3_t out, const float xf[3][4] )
 
 /*
 ================
-R_AliasPreparePoints
+R_AliasDrawTriangles
 
-General clipped case
+The triangles of a model, whose vertices R_AliasTransformFinalVerts put in
+verts: on either thread (R_AliasTrianglesJob)
 ================
 */
-
 static void
-R_AliasPreparePoints (const entity_t *currententity, finalvert_t *verts, const finalvert_t *verts_max)
+R_AliasDrawTriangles (const entity_t *currententity, const dmdl_t *pmdl, finalvert_t *verts)
 {
 	int		i;
 	dstvert_t	*pstverts;
 	dtriangle_t	*ptri;
 	finalvert_t	*pfv[3];
 
-	if ((verts + s_pmdl->num_xyz) >= verts_max)
-	{
-		r_outofverts = true;
-		return;
-	}
-
-	R_AliasTransformFinalVerts(currententity,
-				   s_pmdl->num_xyz,
-				   verts,	// destination for transformed verts
-				   r_lastframe->verts,	// verts from the last frame
-				   r_thisframe->verts	// verts from this frame
-				);
-
 	// clip and draw all triangles
 	//
-	pstverts = (dstvert_t *)((byte *)s_pmdl + s_pmdl->ofs_st);
-	ptri = (dtriangle_t *)((byte *)s_pmdl + s_pmdl->ofs_tris);
+	pstverts = (dstvert_t *)((byte *)pmdl + pmdl->ofs_st);
+	ptri = (dtriangle_t *)((byte *)pmdl + pmdl->ofs_tris);
 
 	if ( ( currententity->flags & RF_WEAPONMODEL ) && ( r_lefthand->value == 1.0F ) )
 	{
-		for (i=0 ; i<s_pmdl->num_tris ; i++, ptri++)
+		for (i=0 ; i<pmdl->num_tris ; i++, ptri++)
 		{
 			pfv[0] = &verts[ptri->index_xyz[0]];
 			pfv[1] = &verts[ptri->index_xyz[1]];
@@ -298,7 +285,7 @@ R_AliasPreparePoints (const entity_t *currententity, finalvert_t *verts, const f
 	}
 	else
 	{
-		for (i=0 ; i<s_pmdl->num_tris ; i++, ptri++)
+		for (i=0 ; i<pmdl->num_tris ; i++, ptri++)
 		{
 			pfv[0] = &verts[ptri->index_xyz[0]];
 			pfv[1] = &verts[ptri->index_xyz[1]];
@@ -328,6 +315,153 @@ R_AliasPreparePoints (const entity_t *currententity, finalvert_t *verts, const f
 			}
 		}
 	}
+}
+
+/*
+================
+MODELS AS JOBS
+
+The triangles of a model are a job (sw_jobs.c): the helper thread draws them
+while this one sets up the next model. The jobs are done one at a time, in
+the order they were added (R_JobsOrdered), as the models draw over each
+other. A job carries what the rasterizer reads of the model's setup; on the
+thread that does it, that state is per thread (R_THREAD).
+
+Each model's vertices have their own part of finalverts until the jobs are
+done (R_AliasJobsBegin to R_AliasJobsEnd).
+================
+*/
+typedef struct
+{
+	const entity_t	*entity;
+	const dmdl_t	*pmdl;
+	finalvert_t	*verts;
+	affinetridesc_t	tridesc;
+	int		blendcolor;
+	void		(*drawspans)(const entity_t *currententity, spanpackage_t *pspanpackage);
+	float		xscale, yscale, ziscale;
+} aliasjob_t;
+
+_Static_assert(sizeof(aliasjob_t) <= RJOB_ARG_SIZE, "aliasjob_t does not fit a job");
+
+static finalvert_t *r_jobverts; // the next model's vertices go here
+
+/* The triangle spans of the helper thread, as many as the renderer's */
+static void
+R_AliasThreadBuffers(void)
+{
+	static R_THREAD int allocated; // this thread allocated them
+
+	if (allocated ? allocated == r_numallocatedtriangles : triangle_spans != NULL)
+	{
+		return;
+	}
+
+	free(triangle_spans);
+	triangle_spans = malloc(r_numallocatedtriangles * sizeof(spanpackage_t));
+	triangles_max = triangle_spans ? &triangle_spans[r_numallocatedtriangles] : NULL;
+	allocated = r_numallocatedtriangles;
+}
+
+static void
+R_AliasTrianglesJob(const void *arg)
+{
+	const aliasjob_t *job = (const aliasjob_t *)arg;
+	// this thread's own state, back as it was afterwards
+	affinetridesc_t tridesc = r_affinetridesc;
+	int blendcolor = r_aliasblendcolor;
+	void (*drawspans)(const entity_t *currententity, spanpackage_t *pspanpackage) = d_pdrawspans;
+	float xscale = aliasxscale, yscale = aliasyscale, ziscale = s_ziscale;
+
+	R_AliasThreadBuffers();
+	if (!triangle_spans)
+	{
+		return;
+	}
+
+	r_affinetridesc = job->tridesc;
+	r_aliasblendcolor = job->blendcolor;
+	d_pdrawspans = job->drawspans;
+	aliasxscale = job->xscale;
+	aliasyscale = job->yscale;
+	s_ziscale = job->ziscale;
+
+	R_AliasDrawTriangles(job->entity, job->pmdl, job->verts);
+
+	r_affinetridesc = tridesc;
+	r_aliasblendcolor = blendcolor;
+	d_pdrawspans = drawspans;
+	aliasxscale = xscale;
+	aliasyscale = yscale;
+	s_ziscale = ziscale;
+}
+
+void
+R_AliasJobsBegin(void)
+{
+	r_jobverts = finalverts;
+	R_JobsBegin();
+	R_JobsOrdered(true);
+}
+
+void
+R_AliasJobsEnd(void)
+{
+	R_JobsFinish();
+	R_JobsOrdered(false);
+}
+
+/*
+================
+R_AliasPreparePoints
+
+General clipped case: the vertices here, the triangles as a job
+================
+*/
+static void
+R_AliasPreparePoints (const entity_t *currententity)
+{
+	finalvert_t *verts;
+	aliasjob_t job;
+
+	if (!r_jobverts)
+	{
+		r_jobverts = finalverts;
+	}
+
+	if ((r_jobverts + s_pmdl->num_xyz) >= finalverts_max)
+	{
+		// the models before are done with theirs
+		R_JobsDrain();
+		r_jobverts = finalverts;
+
+		if ((r_jobverts + s_pmdl->num_xyz) >= finalverts_max)
+		{
+			r_outofverts = true;
+			return;
+		}
+	}
+
+	verts = r_jobverts;
+	r_jobverts += s_pmdl->num_xyz;
+
+	R_AliasTransformFinalVerts(currententity,
+				   s_pmdl->num_xyz,
+				   verts,	// destination for transformed verts
+				   r_lastframe->verts,	// verts from the last frame
+				   r_thisframe->verts	// verts from this frame
+				);
+
+	job.entity = currententity;
+	job.pmdl = s_pmdl;
+	job.verts = verts;
+	job.tridesc = r_affinetridesc;
+	job.blendcolor = r_aliasblendcolor;
+	job.drawspans = d_pdrawspans;
+	job.xscale = aliasxscale;
+	job.yscale = aliasyscale;
+	job.ziscale = s_ziscale;
+	R_JobAdd(R_AliasTrianglesJob, &job, sizeof(job));
 }
 
 
@@ -728,7 +862,6 @@ R_AliasSetUpLerpData(entity_t *currententity, dmdl_t *pmdl, float backlerp)
 
 finalvert_t *finalverts = NULL, *finalverts_max = NULL;
 
-extern void (*d_pdrawspans)(const entity_t *currententity, spanpackage_t *pspanpackage);
 void R_PolysetDrawSpans8_Opaque(const entity_t *currententity, spanpackage_t *pspanpackage);
 void R_PolysetDrawSpans8_33(const entity_t *currententity, spanpackage_t *pspanpackage);
 void R_PolysetDrawSpans8_66(const entity_t *currententity, spanpackage_t *pspanpackage);
@@ -762,7 +895,7 @@ R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
 		{
 			float gunfov = 2 * tan((float)r_gunfov->value / 360 * M_PI);
 			aliasxscale = ((float)r_refdef.vrect.width / gunfov) * r_aliasuvscale;
-			aliasyscale = aliasxscale;
+			aliasyscale = aliasxscale / R_PIXEL_ASPECT;
 		}
 
 		if ( r_lefthand->value == 1.0F )
@@ -863,7 +996,7 @@ R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
 	else
 		s_ziscale = (float)0x8000 * (float)SHIFT16XYZ_MULT;
 
-	R_AliasPreparePoints(currententity, finalverts, finalverts_max);
+	R_AliasPreparePoints(currententity);
 
 	if ( currententity->flags & RF_WEAPONMODEL )
 	{

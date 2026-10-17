@@ -147,6 +147,75 @@ qboolean show_gamepad = false, show_haptic = false, show_gyro = false;
 static SDL_Haptic *joystick_haptic = NULL;
 static SDL_GameController *controller = NULL;
 
+#ifdef MISTER_HYBRID
+/*
+ * The joysticks of the hybrid core (hybrid/sdl2): buttons 0..7 are the
+ * actions of the core's "J1" list in the order of its "jn" (A, B, X, Y, L, R,
+ * Select, Start), 8 and 9 its spare Menu OK and Menu Back, 28 and 29 the
+ * buttons the OSD's Menu OK / Menu Back options name. The d-pad is hat 0, the
+ * analog triggers (read from Linux by the hybrid library) rest at 0.
+ */
+static void
+MiSTer_AddMappings(void)
+{
+	int i;
+
+	for (i = 0; i < SDL_NumJoysticks(); i++)
+	{
+		const char *name = SDL_JoystickNameForIndex(i);
+		char guid[64], mapping[512];
+
+		if (!name || strncmp(name, "MiSTer Joystick", 15) != 0)
+		{
+			continue;
+		}
+
+		SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), guid, sizeof(guid));
+		snprintf(mapping, sizeof(mapping), "%s,%s,"
+			"a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7,"
+			"paddle1:b8,paddle2:b9,paddle3:b28,paddle4:b29,leftstick:b30,rightstick:b31,"
+			"dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,"
+			"leftx:a0,lefty:a1,rightx:a2,righty:a3,lefttrigger:+a4,righttrigger:+a5,",
+			guid, name);
+
+		if (SDL_GameControllerAddMapping(mapping) < 0)
+		{
+			Com_Printf("%s: %s\n", __func__, SDL_GetError());
+		}
+	}
+}
+
+/*
+ * MiSTer presses the d-pad as well when the left stick is pushed far (Main
+ * does that for every core). In the game the stick moves and the d-pad has
+ * commands of its own: a d-pad press is dropped while the stick points its way.
+ */
+static qboolean
+MiSTer_StickHoldsDpad(int button)
+{
+	const int far = 8192; // a quarter of the way: MiSTer's own threshold is further out
+
+	if (!controller)
+	{
+		return false;
+	}
+
+	switch (button)
+	{
+		case SDL_CONTROLLER_BUTTON_DPAD_UP:
+			return SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY) < -far;
+		case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+			return SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY) > far;
+		case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+			return SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX) < -far;
+		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+			return SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX) > far;
+	}
+
+	return false;
+}
+#endif
+
 #define HAPTIC_EFFECT_LIST_SIZE 16
 
 static int last_haptic_volume = 0;
@@ -1059,6 +1128,14 @@ IN_Update(void)
 			case SDL_CONTROLLERBUTTONDOWN:
 			{
 				unsigned char btn = event.cbutton.button;
+
+#ifdef MISTER_HYBRID
+				if (event.type == SDL_CONTROLLERBUTTONDOWN && cls.key_dest == key_game
+					&& MiSTer_StickHoldsDpad(btn))
+				{
+					break;
+				}
+#endif
 
 				Key_Event( (btn == SDL_CONTROLLER_BUTTON_START)? K_ESCAPE : K_JOY_FIRST_BTN + btn,
 					(event.type == SDL_CONTROLLERBUTTONDOWN), true );
@@ -2685,7 +2762,13 @@ IN_Controller_Init(qboolean notify_user)
 		SDL_SetHint( SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0" );
 #endif
 
+#ifdef MISTER_HYBRID
+		/* The core's SDL has no haptic subsystem: rumble goes
+		   through SDL_GameControllerRumble() */
+		if (SDL_Init(SDL_INIT_GAMECONTROLLER) == -1)
+#else
 		if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) == -1)
+#endif
 		{
 			Com_Printf ("Couldn't init SDL Game Controller: %s.\n", SDL_GetError());
 			return;
@@ -2694,6 +2777,10 @@ IN_Controller_Init(qboolean notify_user)
 
 	numjoysticks = SDL_NumJoysticks();
 	Com_Printf ("%i joysticks were found.\n", numjoysticks);
+
+#ifdef MISTER_HYBRID
+	MiSTer_AddMappings();
+#endif
 
 	if (numjoysticks == 0)
 	{

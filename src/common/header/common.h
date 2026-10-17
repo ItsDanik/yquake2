@@ -32,6 +32,14 @@
 #include "shared.h"
 #include "crc.h"
 
+#ifdef MISTER_HYBRID
+/* Where the time of a frame goes, MISTER_HYBRID_FPSLOG=1 */
+#include "../../backends/mister/mister_port.h"
+#define MISTER_MARK(what) MiSTer_Mark(what)
+#else
+#define MISTER_MARK(what)
+#endif
+
 #define YQ2VERSION "8.71pre"
 #define BASEDIRNAME "baseq2"
 

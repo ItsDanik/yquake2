@@ -600,8 +600,15 @@ V_RenderView(float stereo_separation)
 	cl.refdef.y = scr_vrect.y;
 	cl.refdef.width = scr_vrect.width;
 	cl.refdef.height = scr_vrect.height;
+#ifdef MISTER_HYBRID
+	/* The picture is 4:3 in every video mode: a pixel of 320x200
+	   is 1.2 times as tall as it is wide (R_PIXEL_ASPECT) */
+	cl.refdef.fov_y = CalcFov(cl.refdef.fov_x, (float)cl.refdef.width,
+				(float)cl.refdef.height * (3.0f * viddef.width) / (4.0f * viddef.height));
+#else
 	cl.refdef.fov_y = CalcFov(cl.refdef.fov_x, (float)cl.refdef.width,
 				(float)cl.refdef.height);
+#endif
 
 	R_RenderFrame(&cl.refdef);
 

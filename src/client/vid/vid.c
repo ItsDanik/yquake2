@@ -332,6 +332,10 @@ VID_GetRendererLibPath(const char *renderer, char *path, size_t len)
 qboolean
 VID_HasRenderer(const char *renderer)
 {
+#ifdef MISTER_HYBRID
+	/* The software renderer is linked in, there is no other */
+	return strcmp(renderer, "soft") == 0;
+#endif
 	char reflib_path[MAX_OSPATH] = {0};
 	VID_GetRendererLibPath(renderer, reflib_path, sizeof(reflib_path));
 
@@ -377,7 +381,9 @@ VID_ShutdownRenderer(void)
 		/* Shut down the renderer */
 		re.Shutdown();
 		GLimp_ShutdownGraphics();
+#ifndef MISTER_HYBRID
 		Sys_FreeLibrary(reflib_handle);
+#endif
 		reflib_handle = NULL;
 		memset(&re, 0, sizeof(re));
 
@@ -391,6 +397,12 @@ VID_ShutdownRenderer(void)
 /*
  * Loads and initializes a renderer.
  */
+#ifdef MISTER_HYBRID
+/* The software renderer's GetRefAPI, linked into the binary (CMakeLists.txt)
+   under another name here: VID_LoadRenderer has a variable of that name. */
+refexport_t RefSoft_GetRefAPI(refimport_t imp) __asm__("GetRefAPI");
+#endif
+
 static qboolean
 VID_LoadRenderer(void)
 {
@@ -420,7 +432,11 @@ VID_LoadRenderer(void)
 	}
 
 	// Mkay, let's load the requested renderer.
+#ifdef MISTER_HYBRID
+	GetRefAPI = RefSoft_GetRefAPI;
+#else
 	GetRefAPI = (GetRefAPI_t)Sys_LoadLibrary(reflib_path, "GetRefAPI", &reflib_handle);
+#endif
 
 	// Okay, we couldn't load it. It's up to the
 	// caller to recover from this.
@@ -602,7 +618,13 @@ VID_Init(void)
 	// Console variables
 	vid_gamma = Cvar_Get("vid_gamma", "1.0", CVAR_ARCHIVE);
 	vid_fullscreen = Cvar_Get("vid_fullscreen", "0", CVAR_ARCHIVE);
+#ifdef MISTER_HYBRID
+	/* The software renderer, whatever a config says */
+	vid_renderer = Cvar_Get("vid_renderer", "soft", CVAR_ARCHIVE);
+	Cvar_Set("vid_renderer", "soft");
+#else
 	vid_renderer = Cvar_Get("vid_renderer", "gl3", CVAR_ARCHIVE);
+#endif
 
 	// Commands
 	Cmd_AddCommand("vid_restart", VID_Restart_f);
@@ -689,7 +711,9 @@ R_RenderFrame(refdef_t *fd)
 {
 	if (ref_active)
 	{
+		MISTER_MARK(MISTER_T_RENDER);
 		re.RenderFrame(fd);
+		MISTER_MARK(MISTER_T_HUD);
 	}
 }
 
@@ -826,7 +850,9 @@ R_EndFrame(void)
 {
 	if(ref_active)
 	{
+		MISTER_MARK(MISTER_T_BLIT);
 		re.EndFrame();
+		MISTER_MARK(MISTER_T_CLIENT);
 	}
 }
 

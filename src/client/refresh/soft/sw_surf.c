@@ -21,14 +21,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "header/local.h"
 
-static int		sourcetstep;
-static void		*prowdestbase;
-static unsigned char	*pbasesource;
-static int		r_stepback;
-static int		r_lightwidth;
-static int		r_numvblocks;
-static unsigned char	*r_source, *r_sourcemax;
-static unsigned		*r_lightptr;
+/* per thread: jobs build surfaces too (D_BuildSurfaceJob) */
+static R_THREAD int		sourcetstep;
+static R_THREAD void		*prowdestbase;
+static R_THREAD unsigned char	*pbasesource;
+static R_THREAD int		r_stepback;
+static R_THREAD int		r_lightwidth;
+static R_THREAD int		r_numvblocks;
+static R_THREAD unsigned char	*r_source, *r_sourcemax;
+static R_THREAD unsigned		*r_lightptr;
 
 void R_BuildLightMap (drawsurf_t *drawsurf);
 
@@ -409,14 +410,19 @@ static drawsurf_t	r_drawsurf;
 
 /*
 ================
-D_CacheSurface
+D_CacheSurfaceGet
+
+The surface's cache block, and whether it has to be drawn (*build), as
+r_drawsurf describes. Allocates on this thread only.
 ================
 */
-surfcache_t *
-D_CacheSurface (const entity_t *currententity, msurface_t *surface, int miplevel)
+static surfcache_t *
+D_CacheSurfaceGet (const entity_t *currententity, msurface_t *surface, int miplevel, qboolean *build)
 {
 	surfcache_t	*cache;
 	float		surfscale;
+
+	*build = false;
 
 	//
 	// if the surface is animating or flashing, flush the cache
@@ -438,7 +444,14 @@ D_CacheSurface (const entity_t *currententity, msurface_t *surface, int miplevel
 			&& cache->lightadj[1] == r_drawsurf.lightadj[1]
 			&& cache->lightadj[2] == r_drawsurf.lightadj[2]
 			&& cache->lightadj[3] == r_drawsurf.lightadj[3] )
+	{
+		// a job of this round may still be building it
+		if (cache->jobs_round == r_jobs_round)
+		{
+			R_JobsDrain();
+		}
 		return cache;
+	}
 
 	//
 	// determine shape of surface
@@ -452,6 +465,16 @@ D_CacheSurface (const entity_t *currententity, msurface_t *surface, int miplevel
 	//
 	// allocate memory if needed
 	//
+	// Jobs still to be done (sw_jobs.c) may read or build this block, or
+	// one that room is made by throwing out
+	if (!cache || cache->jobs_round == r_jobs_round)
+	{
+		R_JobsDrain();
+#ifdef MISTER_HYBRID
+		D_CheckSolidSpans(false);
+#endif
+	}
+
 	if (!cache) // if a texture just animated, don't reallocate it
 	{
 		cache = D_SCAlloc (r_drawsurf.surfwidth,
@@ -481,11 +504,84 @@ D_CacheSurface (const entity_t *currententity, msurface_t *surface, int miplevel
 
 	c_surf++;
 
+	*build = true;
+	return cache;
+}
+
+/*
+================
+D_BuildSurface
+
+Light and draw the texture of a surface into its cache block, as
+D_CacheSurfaceDeferred described it: on either thread (sw_jobs.c)
+================
+*/
+void
+D_BuildSurface (drawsurf_t *drawsurf)
+{
+#ifdef MISTER_HYBRID
+	// the helper's own buffer for the lights, as large as the renderer's
+	static __thread int allocated;
+
+	if (allocated != r_numallocatedlights && blocklights != NULL && allocated)
+	{
+		free(blocklights);
+		blocklights = NULL;
+	}
+	if (!blocklights)
+	{
+		blocklights = malloc(r_numallocatedlights * sizeof(light_t));
+		blocklight_max = blocklights ? &blocklights[r_numallocatedlights] : NULL;
+		allocated = r_numallocatedlights;
+	}
+#endif
+
 	// calculate the lightings
-	R_BuildLightMap (&r_drawsurf);
+	R_BuildLightMap (drawsurf);
 
 	// rasterize the surface into the cache
-	R_DrawSurface (&r_drawsurf);
+	R_DrawSurface (drawsurf);
+}
 
+/*
+================
+D_CacheSurfaceDeferred
+
+D_CacheSurface without the drawing: if the block has to be (re)drawn,
+*drawsurf says how, for D_BuildSurface, and *build is true
+================
+*/
+surfcache_t *
+D_CacheSurfaceDeferred (const entity_t *currententity, msurface_t *surface, int miplevel,
+	drawsurf_t *drawsurf, qboolean *build)
+{
+	surfcache_t *cache = D_CacheSurfaceGet(currententity, surface, miplevel, build);
+
+	if (*build)
+	{
+		*drawsurf = r_drawsurf;
+	}
+	return cache;
+}
+
+/*
+================
+D_CacheSurface
+================
+*/
+surfcache_t *
+D_CacheSurface (const entity_t *currententity, msurface_t *surface, int miplevel)
+{
+	qboolean build;
+	surfcache_t *cache = D_CacheSurfaceGet(currententity, surface, miplevel, &build);
+
+	if (build)
+	{
+		// calculate the lightings
+		R_BuildLightMap (&r_drawsurf);
+
+		// rasterize the surface into the cache
+		R_DrawSurface (&r_drawsurf);
+	}
 	return cache;
 }

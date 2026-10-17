@@ -182,6 +182,15 @@ typedef struct mleaf_s
 extern refdef_t r_newrefdef;
 extern viddef_t vid;
 
+/* How much taller than wide a pixel is on the screen. The MiSTer shows
+   every video mode as a 4:3 picture: a pixel of 320x200 is 1.2 times as
+   tall as it is wide. */
+#ifdef MISTER_HYBRID
+#define R_PIXEL_ASPECT ((3.0f * vid.width) / (4.0f * vid.height))
+#else
+#define R_PIXEL_ASPECT 1.0f
+#endif
+
 /* Shared models func */
 typedef struct image_s* (*findimage_t)(const char *name, imagetype_t type);
 extern void *Mod_LoadMD2 (const char *mod_name, const void *buffer, int modfilelen,

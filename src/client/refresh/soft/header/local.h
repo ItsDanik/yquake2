@@ -27,6 +27,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "../../ref_shared.h"
 
+/* State that is per thread: the helper thread of sw_jobs.c builds surfaces
+   and draws models with it too */
+#ifdef MISTER_HYBRID
+#define R_THREAD __thread
+#else
+#define R_THREAD
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -264,6 +272,7 @@ typedef struct surfcache_s
 	unsigned		height; // DEBUG only needed for debug
 	float			mipscale;
 	image_t			*image;
+	int			jobs_round; // r_jobs_round of the last job that read it
 	byte			data[4]; // width*height elements
 } surfcache_t;
 
@@ -271,6 +280,7 @@ typedef struct espan_s
 {
 	int		u, v, count;
 	struct espan_s	*pnext;
+	int		zwrite; // D_MarkZSpans: the z of the span is to be written
 } espan_t;
 extern espan_t	*vid_polygon_spans; // space for spans in r_poly
 
@@ -341,7 +351,7 @@ extern float	r_aliasuvscale; // scale-up factor for screen u and v
 				//  on Alias vertices passed to driver
 extern qboolean	r_dowarp;
 
-extern affinetridesc_t	r_affinetridesc;
+extern R_THREAD affinetridesc_t	r_affinetridesc;
 
 void D_WarpScreen(void);
 
@@ -365,6 +375,9 @@ void TurbulentPow2(espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zi
 void NonTurbulentPow2(espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zistepv);
 
 surfcache_t *D_CacheSurface(const entity_t *currententity, msurface_t *surface, int miplevel);
+surfcache_t *D_CacheSurfaceDeferred(const entity_t *currententity, msurface_t *surface, int miplevel,
+	drawsurf_t *drawsurf, qboolean *build);
+void D_BuildSurface(drawsurf_t *drawsurf);
 
 extern int	d_vrectx, d_vrecty, d_vrectright_particle, d_vrectbottom_particle;
 
@@ -397,7 +410,10 @@ extern vec3_t	vright, base_vright;
 
 extern surf_t	*surfaces, *surface_p, *surf_max;
 // allow some very large lightmaps
-extern light_t	*blocklights, *blocklight_max;
+// (per thread: the surface cache is also built by jobs, sw_jobs.c)
+extern R_THREAD light_t	*blocklights, *blocklight_max;
+extern int r_numallocatedlights;
+extern int r_numallocatedtriangles;
 
 // surfaces are generated in back to front order by the bsp, so if a surf
 // pointer is greater than another one, it should be drawn in front
@@ -511,7 +527,8 @@ typedef struct {
 	light3_t	light;
 	zvalue_t	zi;
 } spanpackage_t;
-extern spanpackage_t	*triangle_spans, *triangles_max;
+extern R_THREAD spanpackage_t	*triangle_spans, *triangles_max;
+extern R_THREAD void (*d_pdrawspans)(const entity_t *currententity, spanpackage_t *pspanpackage);
 
 void R_PolysetDrawSpans8_33(const entity_t *currententity, spanpackage_t *pspanpackage);
 void R_PolysetDrawSpans8_66(const entity_t *currententity, spanpackage_t *pspanpackage);
@@ -525,9 +542,10 @@ extern int	r_numallocatedverts;
 extern int	r_numallocatededgebasespans;
 extern finalvert_t	*finalverts, *finalverts_max;
 
-extern	int	r_aliasblendcolor;
+extern R_THREAD int	r_aliasblendcolor;
 
-extern float	aliasxscale, aliasyscale, aliasxcenter, aliasycenter;
+extern R_THREAD float	aliasxscale, aliasyscale;
+extern float	aliasxcenter, aliasycenter;
 
 extern qboolean	r_outofsurfaces;
 extern qboolean	r_outofedges;
@@ -594,7 +612,57 @@ image_t	*R_FindImage(const char *name, imagetype_t type);
 byte	*Get_BestImageSize(const image_t *image, int *req_width, int *req_height);
 void	R_FreeUnusedImages(void);
 qboolean R_ImageHasFreeSpace(void);
-pixel_t	R_ApplyLight(pixel_t pix, const light3_t light);
+/*
+ * (int)ceil(x) for |x| < 2^31 without a call: the MiSTer's FPU has no
+ * rounding instruction, and ceil() is a function of the C library there
+ */
+static inline int
+R_CeilInt(float x)
+{
+	int i = (int)x;
+
+	return i + (x > (float)i);
+}
+
+/*
+ * Apply color light to texture pixel. Inline: it is called for every texel
+ * of the surface cache and of the models (6% of a frame as a call)
+ */
+static inline pixel_t
+R_ApplyLight(pixel_t pix, const light3_t light)
+{
+	light3_t light_masked;
+	pixel_t i_r, i_g, i_b;
+	byte b_r, b_g, b_b;
+	int i_c;
+
+	light_masked[0] = light[0] & LIGHTMASK;
+	light_masked[1] = light[1] & LIGHTMASK;
+	light_masked[2] = light[2] & LIGHTMASK;
+
+	/* same light or colorlight == 0 */
+	if (light_masked[0] == light_masked[1] && light_masked[0] == light_masked[2])
+		return vid_colormap[pix + light_masked[0]];
+
+	/* get index of color component of each component */
+	i_r = vid_colormap[light_masked[0] + pix];
+	i_g = vid_colormap[light_masked[1] + pix];
+	i_b = vid_colormap[light_masked[2] + pix];
+
+	/* get color component for each component */
+	b_r = d_8to24table[i_r * 4 + 0];
+	b_g = d_8to24table[i_g * 4 + 1];
+	b_b = d_8to24table[i_b * 4 + 2];
+
+	/* convert back to indexed color */
+	b_r = ( b_r >> 3 ) & 31;
+	b_g = ( b_g >> 2 ) & 63;
+	b_b = ( b_b >> 3 ) & 31;
+
+	i_c = b_r | ( b_g << 5 ) | ( b_b << 11 );
+
+	return d_16to8table[i_c & 0xFFFF];
+}
 void	R_Convert32To8bit(const unsigned char* pic_in, pixel_t* pic_out, size_t size, qboolean transparent);
 
 void R_InitSkyBox(model_t *loadmodel);
@@ -616,5 +684,30 @@ IMPORTED FUNCTIONS
 ====================================================================
 */
 extern refimport_t	ri;
+
+/*
+ * A second thread for the parts of a frame that can be shared (sw_jobs.c).
+ * Between R_JobsBegin() and R_JobsFinish() a job runs on either thread at
+ * some time before R_JobsFinish() or R_JobsDrain() returns; outside, or
+ * without the MiSTer, at once.
+ */
+#define RJOB_ARG_SIZE 192
+typedef void (*rjob_t)(const void *arg);
+extern int r_jobs_round;
+void R_JobsBegin(void);
+void R_JobAdd(rjob_t fn, const void *arg, size_t size);
+void R_JobsDrain(void);
+void R_JobsFinish(void);
+void R_JobsOrdered(qboolean ordered);
+
+/* The texture spans of a solid surface as a job (sw_scan.c), after its
+   cache block was drawn if build is not NULL */
+void D_DrawSolidSpans(espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zistepv,
+	const drawsurf_t *build);
+void D_CheckSolidSpans(qboolean report);
+
+/* Models as jobs (sw_alias.c): R_DrawAliasModel between these two */
+void R_AliasJobsBegin(void);
+void R_AliasJobsEnd(void);
 
 #endif

@@ -446,47 +446,6 @@ R_LoadPic(const char *name, const byte *pic, int width, int realwidth, int heigh
 }
 
 /*
- * Apply color light to texture pixel
- *
- * TODO: -22% fps lost
- */
-pixel_t
-R_ApplyLight(pixel_t pix, const light3_t light)
-{
-	light3_t light_masked;
-	pixel_t i_r, i_g, i_b;
-	byte b_r, b_g, b_b;
-	int i_c;
-
-	light_masked[0] = light[0] & LIGHTMASK;
-	light_masked[1] = light[1] & LIGHTMASK;
-	light_masked[2] = light[2] & LIGHTMASK;
-
-	/* same light or colorlight == 0 */
-	if (light_masked[0] == light_masked[1] && light_masked[0] == light_masked[2])
-		return vid_colormap[pix + light_masked[0]];
-
-	/* get index of color component of each component */
-	i_r = vid_colormap[light_masked[0] + pix];
-	i_g = vid_colormap[light_masked[1] + pix];
-	i_b = vid_colormap[light_masked[2] + pix];
-
-	/* get color component for each component */
-	b_r = d_8to24table[i_r * 4 + 0];
-	b_g = d_8to24table[i_g * 4 + 1];
-	b_b = d_8to24table[i_b * 4 + 2];
-
-	/* convert back to indexed color */
-	b_r = ( b_r >> 3 ) & 31;
-	b_g = ( b_g >> 2 ) & 63;
-	b_b = ( b_b >> 3 ) & 31;
-
-	i_c = b_r | ( b_g << 5 ) | ( b_b << 11 );
-
-	return d_16to8table[i_c & 0xFFFF];
-}
-
-/*
 ===============
 R_FindImage
 

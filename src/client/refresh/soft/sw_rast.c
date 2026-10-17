@@ -253,7 +253,7 @@ R_EmitEdge (mvertex_t *pv0, mvertex_t *pv1, medge_t *r_pedge, qboolean r_nearzio
 		if (v0 > r_refdef.fvrectbottom_adj)
 			v0 = r_refdef.fvrectbottom_adj;
 
-		ceilv0 = (int) ceil(v0);
+		ceilv0 = R_CeilInt(v0);
 	}
 
 	world = &pv1->position[0];
@@ -293,7 +293,7 @@ R_EmitEdge (mvertex_t *pv0, mvertex_t *pv1, medge_t *r_pedge, qboolean r_nearzio
 
 	r_emitted = 1;
 
-	r_ceilv1 = (int) ceil(r_v1);
+	r_ceilv1 = R_CeilInt(r_v1);
 
 
 	// create the edge

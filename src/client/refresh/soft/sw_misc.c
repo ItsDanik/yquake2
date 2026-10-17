@@ -272,11 +272,11 @@ R_ViewChanged (const vrect_t *vr)
 	aliasxscale = xscale * r_aliasuvscale;
 	xscaleinv = 1.0 / xscale;
 
-	yscale = xscale;
+	yscale = xscale / R_PIXEL_ASPECT;
 	aliasyscale = yscale * r_aliasuvscale;
 	yscaleinv = 1.0 / yscale;
 	xscaleshrink = (r_refdef.vrect.width-6)/r_refdef.horizontalFieldOfView;
-	yscaleshrink = xscaleshrink;
+	yscaleshrink = xscaleshrink / R_PIXEL_ASPECT;
 
 	// left side clip
 	screenedge[0].normal[0] = -1.0 / (xOrigin*r_refdef.horizontalFieldOfView);

@@ -34,50 +34,79 @@ typedef struct {
 	compactvert_t	*prightedgevert2;
 } edgetable;
 
-static int	ubasestep, errorterm, erroradjustup, erroradjustdown;
+/* All of the rasterizer's state is per thread: models are drawn by jobs
+   (sw_jobs.c, R_DrawAliasModel) */
+static R_THREAD int	ubasestep, errorterm, erroradjustup, erroradjustdown;
 
-static compactvert_t r_p0, r_p1, r_p2;
+static R_THREAD compactvert_t r_p0, r_p1, r_p2;
 
-static int	d_xdenom;
+static R_THREAD int	d_xdenom;
 
-static edgetable *pedgetable;
+static R_THREAD edgetable *pedgetable;
 
-static edgetable edgetables[12] = {
-	{1, &r_p0, &r_p2, &r_p2, 2, &r_p0, &r_p1, &r_p2},
-	{2, &r_p1, &r_p0, &r_p2, 1, &r_p1, &r_p2, &r_p2},
-	{1, &r_p0, &r_p2, &r_p2, 1, &r_p1, &r_p2, &r_p2},	// flat top
-	{1, &r_p1, &r_p0, &r_p0, 2, &r_p1, &r_p2, &r_p0},
-	{2, &r_p0, &r_p2, &r_p1, 1, &r_p0, &r_p1, &r_p1},
-	{1, &r_p2, &r_p1, &r_p1, 1, &r_p2, &r_p0, &r_p0},
-	{1, &r_p2, &r_p1, &r_p1, 2, &r_p2, &r_p0, &r_p1},
-	{2, &r_p2, &r_p1, &r_p0, 1, &r_p2, &r_p0, &r_p0},
-	{1, &r_p1, &r_p0, &r_p0, 1, &r_p1, &r_p2, &r_p2},
-	{1, &r_p2, &r_p1, &r_p1, 1, &r_p0, &r_p1, &r_p1},	// flat top
-	{1, &r_p1, &r_p0, &r_p0, 1, &r_p2, &r_p0, &r_p0},	// flat top
-	{1, &r_p0, &r_p2, &r_p2, 1, &r_p0, &r_p1, &r_p1},
+/* which of r_p0, r_p1, r_p2 each vertex of an edge table is: the tables
+   point at the thread's own (R_PolysetEdgeTables) */
+static const byte edgetable_verts[12][8] = {
+	{1, 0, 2, 2, 2, 0, 1, 2},
+	{2, 1, 0, 2, 1, 1, 2, 2},
+	{1, 0, 2, 2, 1, 1, 2, 2},	// flat top
+	{1, 1, 0, 0, 2, 1, 2, 0},
+	{2, 0, 2, 1, 1, 0, 1, 1},
+	{1, 2, 1, 1, 1, 2, 0, 0},
+	{1, 2, 1, 1, 2, 2, 0, 1},
+	{2, 2, 1, 0, 1, 2, 0, 0},
+	{1, 1, 0, 0, 1, 1, 2, 2},
+	{1, 2, 1, 1, 1, 0, 1, 1},	// flat top
+	{1, 1, 0, 0, 1, 2, 0, 0},	// flat top
+	{1, 0, 2, 2, 1, 0, 1, 1},
 };
 
+static R_THREAD edgetable edgetables[12];
+static R_THREAD qboolean edgetables_ready;
+
+static void
+R_PolysetEdgeTables(void)
+{
+	compactvert_t *p[3] = { &r_p0, &r_p1, &r_p2 };
+	int i;
+
+	for (i = 0; i < 12; i++)
+	{
+		const byte *e = edgetable_verts[i];
+
+		edgetables[i].numleftedges = e[0];
+		edgetables[i].pleftedgevert0 = p[e[1]];
+		edgetables[i].pleftedgevert1 = p[e[2]];
+		edgetables[i].pleftedgevert2 = p[e[3]];
+		edgetables[i].numrightedges = e[4];
+		edgetables[i].prightedgevert0 = p[e[5]];
+		edgetables[i].prightedgevert1 = p[e[6]];
+		edgetables[i].prightedgevert2 = p[e[7]];
+	}
+	edgetables_ready = true;
+}
+
 // FIXME: some of these can become statics
-static int	a_sstepxfrac, a_tstepxfrac, a_ststepxwhole;
-static int	r_sstepx, r_tstepx, r_sstepy, r_tstepy;
-static light3_t	r_lstepx, r_lstepy;
-static zvalue_t	r_zistepx, r_zistepy;
-static int	d_aspancount;
+static R_THREAD int	a_sstepxfrac, a_tstepxfrac, a_ststepxwhole;
+static R_THREAD int	r_sstepx, r_tstepx, r_sstepy, r_tstepy;
+static R_THREAD light3_t	r_lstepx, r_lstepy;
+static R_THREAD zvalue_t	r_zistepx, r_zistepy;
+static R_THREAD int	d_aspancount;
 
-static spanpackage_t	*d_pedgespanpackage;
+static R_THREAD spanpackage_t	*d_pedgespanpackage;
 
-spanpackage_t	*triangle_spans, *triangles_max;
+R_THREAD spanpackage_t	*triangle_spans, *triangles_max;
 
-static int	d_sfrac, d_tfrac;
-static light3_t d_light;
-static zvalue_t	d_zi;
-static int	d_ptexextrastep, d_sfracextrastep;
-static int	d_tfracextrastep, d_ptexbasestep;
-static light3_t	d_lightbasestep, d_lightextrastep;
-static int	d_sfracbasestep, d_tfracbasestep;
-static zvalue_t	d_ziextrastep, d_zibasestep;
+static R_THREAD int	d_sfrac, d_tfrac;
+static R_THREAD light3_t d_light;
+static R_THREAD zvalue_t	d_zi;
+static R_THREAD int	d_ptexextrastep, d_sfracextrastep;
+static R_THREAD int	d_tfracextrastep, d_ptexbasestep;
+static R_THREAD light3_t	d_lightbasestep, d_lightextrastep;
+static R_THREAD int	d_sfracbasestep, d_tfracbasestep;
+static R_THREAD zvalue_t	d_ziextrastep, d_zibasestep;
 
-void	(*d_pdrawspans)(const entity_t *currententity, spanpackage_t *pspanpackage);
+R_THREAD void	(*d_pdrawspans)(const entity_t *currententity, spanpackage_t *pspanpackage);
 
 static void R_PolysetSetEdgeTable(void);
 static void R_RasterizeAliasPolySmooth(const entity_t *currententity);
@@ -386,10 +415,8 @@ R_PolysetCalcGradients (int skinwidth)
 	{
 		t0 = r_p0.l[i] - r_p2.l[i];
 		t1 = r_p1.l[i] - r_p2.l[i];
-		r_lstepx[i] = (int)
-				ceil((t1 * p01_minus_p21 - t0 * p11_minus_p21) * xstepdenominv);
-		r_lstepy[i] = (int)
-				ceil((t1 * p00_minus_p20 - t0 * p10_minus_p20) * ystepdenominv);
+		r_lstepx[i] = R_CeilInt((t1 * p01_minus_p21 - t0 * p11_minus_p21) * xstepdenominv);
+		r_lstepy[i] = R_CeilInt((t1 * p00_minus_p20 - t0 * p10_minus_p20) * ystepdenominv);
 	}
 
 	t0 = r_p0.s - r_p2.s;
@@ -948,6 +975,11 @@ static void
 R_PolysetSetEdgeTable(void)
 {
 	int			edgetableindex;
+
+	if (!edgetables_ready)
+	{
+		R_PolysetEdgeTables();
+	}
 
 	edgetableindex = 0;	// assume the vertices are already in
 				//  top to bottom order

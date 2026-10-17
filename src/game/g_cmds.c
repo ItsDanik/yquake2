@@ -1890,6 +1890,64 @@ Cmd_PrefWeap_f(edict_t *ent)
 	}
 }
 
+#ifdef MISTER_HYBRID
+/*
+ * MiSTer hybrid core: the OSD's "Next Level" (core/YQuake2.sv of the YQuake2
+ * core). The level is left as through its exit: a target_changelevel is
+ * used as if the player had reached it. Quake II's units go back and forth
+ * between their levels, so it is the first exit that does not lead back to
+ * the level the player came from (g_main.c), else the first one. Single
+ * player only.
+ */
+extern char mister_prevmap[MAX_QPATH];
+
+static void
+Cmd_MiSTerNextLevel_f(edict_t *ent)
+{
+	edict_t *t = NULL, *pick = NULL;
+	char dest[MAX_QPATH], *p;
+	qboolean back, pick_back = false;
+
+	if (deathmatch->value || coop->value || level.intermissiontime || !ent)
+	{
+		return;
+	}
+
+	while ((t = G_Find(t, FOFS(classname), "target_changelevel")) != NULL)
+	{
+		if (!t->map || !t->map[0] || !t->use)
+		{
+			continue;
+		}
+
+		Q_strlcpy(dest, t->map[0] == '*' ? t->map + 1 : t->map, sizeof(dest));
+
+		if ((p = strchr(dest, '$')) != NULL)
+		{
+			*p = 0;
+		}
+
+		back = Q_stricmp(dest, mister_prevmap) == 0;
+
+		if (!pick || (pick_back && !back))
+		{
+			pick = t;
+			pick_back = back;
+		}
+	}
+
+	if (pick)
+	{
+		gi.dprintf("MiSTer: next level, %s\n", pick->map);
+		pick->use(pick, ent, ent);
+	}
+	else
+	{
+		gi.cprintf(ent, PRINT_HIGH, "This level has no exit.\n");
+	}
+}
+#endif
+
 void
 ClientCommand(edict_t *ent)
 {
@@ -2022,6 +2080,12 @@ ClientCommand(edict_t *ent)
 	{
 		Cmd_PutAway_f(ent);
 	}
+#ifdef MISTER_HYBRID
+	else if (Q_stricmp(cmd, "mister_nextlevel") == 0)
+	{
+		Cmd_MiSTerNextLevel_f(ent);
+	}
+#endif
 	else if (Q_stricmp(cmd, "wave") == 0)
 	{
 		Cmd_Wave_f(ent);

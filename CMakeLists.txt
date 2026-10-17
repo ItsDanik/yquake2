@@ -71,6 +71,23 @@ option(GLES1_RENDERER "Build the GLES1 renderer" OFF)
 option(GLES3_RENDERER "Build the GLES3 renderer" ON)
 option(SOFT_RENDERER "Build the software renderer" ON)
 option(XDG_SUPPORT "Use XDG Directories to store user data" ON)
+option(MISTER_HYBRID "Build for the MiSTer hybrid core (needs SDL2 with the MiSTer drivers)" OFF)
+
+# MiSTer hybrid core: one binary with the software renderer linked in, against
+# the static SDL2 with the MiSTer drivers (hybrid/sdl2). No GPU, so no GL
+# renderers; no OpenAL or cURL on the MiSTer either.
+if(MISTER_HYBRID)
+	set(SDL3_SUPPORT OFF CACHE BOOL "" FORCE)
+	set(GL1_RENDERER OFF CACHE BOOL "" FORCE)
+	set(GL3_RENDERER OFF CACHE BOOL "" FORCE)
+	set(GLES1_RENDERER OFF CACHE BOOL "" FORCE)
+	set(GLES3_RENDERER OFF CACHE BOOL "" FORCE)
+	set(SOFT_RENDERER OFF CACHE BOOL "" FORCE)
+	set(OPENAL_SUPPORT OFF CACHE BOOL "" FORCE)
+	set(CURL_SUPPORT OFF CACHE BOOL "" FORCE)
+	set(XDG_SUPPORT OFF CACHE BOOL "" FORCE)
+	add_definitions(-DMISTER_HYBRID)
+endif()
 
 set(SYSTEMDIR "" CACHE STRING "Override the system default directory")
 
@@ -189,6 +206,11 @@ endif()
 if (SDL3_SUPPORT)
 	find_package(SDL3 REQUIRED)
 	add_definitions(-DUSE_SDL3)
+elseif(MISTER_HYBRID)
+	# The static SDL2 of hybrid/sdl2, with its dependencies (threads, the
+	# hybrid library) through its CMake target
+	find_package(SDL2 REQUIRED CONFIG)
+	list(APPEND yquake2SDLLinkerFlags SDL2::SDL2-static)
 else()
 	find_package(SDL2 REQUIRED)
 	list(APPEND yquake2IncludeDirectories "${SDL2_INCLUDE_DIR}/..")
@@ -298,7 +320,8 @@ if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
 		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpmath=sse")
 	endif()
 
-	if ("${ARCH}" STREQUAL "arm")
+	# (the MiSTer's toolchain file sets its own CPU, a Cortex-A9)
+	if ("${ARCH}" STREQUAL "arm" AND NOT MISTER_HYBRID)
 		if (CMAKE_SIZEOF_VOID_P EQUAL 4)
 			set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv6k")
 		endif()
@@ -697,6 +720,7 @@ set(SOFT-Source
 	${REF_SRC_DIR}/soft/sw_draw.c
 	${REF_SRC_DIR}/soft/sw_edge.c
 	${REF_SRC_DIR}/soft/sw_image.c
+	${REF_SRC_DIR}/soft/sw_jobs.c
 	${REF_SRC_DIR}/soft/sw_light.c
 	${REF_SRC_DIR}/soft/sw_main.c
 	${REF_SRC_DIR}/soft/sw_misc.c
@@ -758,6 +782,26 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
 else()
 	add_executable(quake2 ${Client-Source} ${Client-SDL-Source} ${Client-Header}
 			${Platform-Specific-Source} ${Backends-Generic-Source})
+	if(MISTER_HYBRID)
+		# The software renderer goes into the binary. Its files are built as
+		# for its library and linked into one object first, in which only
+		# GetRefAPI stays visible: the renderer has its own copies of
+		# functions the client has too (shared.c, Com_Printf, ...).
+		add_library(ref_soft_objects OBJECT ${SOFT-Source} ${SOFT-Header})
+		target_link_libraries(ref_soft_objects SDL2::SDL2-static)
+		set(REF_SOFT_OBJECT ${CMAKE_BINARY_DIR}/ref_soft.o)
+		add_custom_command(OUTPUT ${REF_SOFT_OBJECT}
+			COMMAND ${CMAKE_LINKER} -r -o ${REF_SOFT_OBJECT} $<TARGET_OBJECTS:ref_soft_objects>
+			COMMAND ${CMAKE_OBJCOPY} --localize-hidden ${REF_SOFT_OBJECT}
+			DEPENDS $<TARGET_OBJECTS:ref_soft_objects>
+			COMMAND_EXPAND_LISTS)
+		set_source_files_properties(${REF_SOFT_OBJECT} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+		target_sources(quake2 PRIVATE ${REF_SOFT_OBJECT}
+			${BACKENDS_SRC_DIR}/mister/mister_port.c)
+		add_dependencies(quake2 ref_soft_objects)
+		# timer_create() of the profiler (mister_port.c) is in librt with glibc 2.31
+		target_link_libraries(quake2 rt)
+	endif()
 	set_target_properties(quake2 PROPERTIES
 			RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/release
 			)
@@ -768,7 +812,8 @@ else()
 	endif()
 endif()
 
-# Quake 2 Dedicated Server
+# Quake 2 Dedicated Server (not on the MiSTer)
+if(NOT MISTER_HYBRID)
 add_executable(q2ded ${Server-Source} ${Server-Header} ${Platform-Specific-Source}
 		${Backends-Generic-Source})
 set_target_properties(q2ded PROPERTIES
@@ -779,6 +824,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
 	target_link_libraries(q2ded ${yquake2LinkerFlags} ${yquake2ZLibLinkerFlags} ws2_32 winmm)
 else()
 	target_link_libraries(q2ded ${yquake2LinkerFlags} ${yquake2ServerLinkerFlags} ${yquake2ZLibLinkerFlags})
+endif()
 endif()
 
 # Build the game dynamic library

@@ -273,6 +273,26 @@ extern qboolean japanese_confirm;
 int
 Key_GetMenuKey(int key)
 {
+#ifdef MISTER_HYBRID
+	/* Confirm and back are the core's Menu OK and Menu Back (by default
+	   the buttons that do it in the MiSTer menu), which come as paddles
+	   (MiSTer_AddMappings() in input/sdl2.c). The face buttons do not:
+	   the button of Menu OK is also one of them and would confirm twice. */
+	switch (key)
+	{
+		case K_PADDLE_RIGHT_1:
+		case K_PADDLE_RIGHT_2:
+			return K_ENTER;
+
+		case K_PADDLE_LEFT_1:
+		case K_PADDLE_LEFT_2:
+			return K_ESCAPE;
+
+		case K_BTN_SOUTH:
+		case K_BTN_EAST:
+			return key;
+	}
+#endif
 	switch (key)
 	{
 		case K_KP_UPARROW:

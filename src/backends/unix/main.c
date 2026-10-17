@@ -35,6 +35,9 @@
 #endif
 
 #include "../../common/header/common.h"
+#ifdef MISTER_HYBRID
+#include "../mister/mister_port.h"
+#endif
 
 void registerHandler(void);
 void setCustomCfgDir(const char* dir);
@@ -42,6 +45,20 @@ void setCustomCfgDir(const char* dir);
 int
 main(int argc, char **argv)
 {
+#ifdef MISTER_HYBRID
+	/* The launcher keeps what the game prints in /tmp: a line at a
+	   time, so that the log has the last ones if the game crashes */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
+	/* Which game to play, before anything else is set up: the
+	   launcher's SIGTERM still ends the process while the list
+	   is on the screen. */
+	if (!MiSTer_SelectGame(&argc, &argv))
+	{
+		return MiSTer_ExitCode();
+	}
+#endif
+
 	// register signal handler
 	registerHandler();
 
@@ -111,7 +128,9 @@ main(int argc, char **argv)
 		}
 	}
 
-#ifndef __HAIKU__
+#ifdef MISTER_HYBRID
+	/* Everything runs as root on the MiSTer. */
+#elif !defined(__HAIKU__)
 	/* Prevent running Quake II as root. Only very mad
 	   minded or stupid people even think about it. :) */
 	if (getuid() == 0)

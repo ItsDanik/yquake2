@@ -28,6 +28,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif
 
 #include "header/local.h"
+#ifdef MISTER_HYBRID
+#include "../../../backends/mister/mister_port.h"
+#endif
 
 #define NUMSTACKEDGES		2048
 #define NUMSTACKSURFACES	1024
@@ -111,7 +114,8 @@ oldrefdef_t	r_refdef;
 float		xscale, yscale;
 float		xscaleinv, yscaleinv;
 float		xscaleshrink, yscaleshrink;
-float		aliasxscale, aliasyscale, aliasxcenter, aliasycenter;
+R_THREAD float	aliasxscale, aliasyscale;
+float		aliasxcenter, aliasycenter;
 
 cplane_t	screenedge[4];
 
@@ -816,11 +820,11 @@ R_DrawNullModel(void)
 
 /*
 =============
-R_DrawEntitiesOnList
+R_DrawEntitiesOnListPass
 =============
 */
 static qboolean
-R_DrawEntitiesOnList (qboolean translucent)
+R_DrawEntitiesOnListPass (qboolean translucent)
 {
 	int i;
 	qboolean anytranslucent = false;
@@ -849,6 +853,7 @@ R_DrawEntitiesOnList (qboolean translucent)
 				modelorg[1] = -r_origin[1];
 				modelorg[2] = -r_origin[2];
 				VectorCopy(vec3_origin, r_entorigin);
+				R_JobsDrain();	// the models before it first
 				R_DrawBeam(currententity);
 			}
 			else
@@ -856,6 +861,7 @@ R_DrawEntitiesOnList (qboolean translucent)
 				const model_t *currentmodel = currententity->model;
 				if (!currentmodel)
 				{
+					R_JobsDrain();	// the models before it first
 					R_DrawNullModel();
 					continue;
 				}
@@ -865,6 +871,7 @@ R_DrawEntitiesOnList (qboolean translucent)
 				switch (currentmodel->type)
 				{
 				case mod_sprite:
+					R_JobsDrain();	// the models before it first
 					R_DrawSprite(currententity, currentmodel);
 					break;
 
@@ -900,6 +907,7 @@ R_DrawEntitiesOnList (qboolean translucent)
 				modelorg[1] = -r_origin[1];
 				modelorg[2] = -r_origin[2];
 				VectorCopy(vec3_origin, r_entorigin);
+				R_JobsDrain();	// the models before it first
 				R_DrawBeam(currententity);
 			}
 			else
@@ -907,6 +915,7 @@ R_DrawEntitiesOnList (qboolean translucent)
 				const model_t *currentmodel = currententity->model;
 				if (!currentmodel)
 				{
+					R_JobsDrain();	// the models before it first
 					R_DrawNullModel();
 					continue;
 				}
@@ -916,6 +925,7 @@ R_DrawEntitiesOnList (qboolean translucent)
 				switch (currentmodel->type)
 				{
 				case mod_sprite:
+					R_JobsDrain();	// the models before it first
 					R_DrawSprite(currententity, currentmodel);
 					break;
 
@@ -937,6 +947,109 @@ R_DrawEntitiesOnList (qboolean translucent)
 
 	return anytranslucent;
 }
+
+/*
+=============
+R_DrawEntitiesOnList
+
+The models' triangles are drawn by jobs (sw_alias.c, "MODELS AS JOBS"), and
+are all there when this returns
+=============
+*/
+static qboolean
+R_DrawEntitiesOnList (qboolean translucent)
+{
+	qboolean anytranslucent;
+
+	R_AliasJobsBegin();
+	anytranslucent = R_DrawEntitiesOnListPass(translucent);
+	R_AliasJobsEnd();
+
+	return anytranslucent;
+}
+
+#ifdef MISTER_HYBRID
+/*
+=============
+R_DrawEntitiesOnListChecked
+
+MISTER_HYBRID_MODELCHECK=1, a test: the pass is drawn with the jobs, then
+again from the same frame and z buffer without them, and the two are
+compared. What the second one drew stays.
+=============
+*/
+static qboolean
+R_DrawEntitiesOnListChecked (qboolean translucent)
+{
+	static int check = -1;
+	static pixel_t *frame_before, *frame_jobs;
+	static zvalue_t *z_before, *z_jobs;
+	static int size;
+	static unsigned long long passes, pixels, wrong;
+	int zregion[4], n, i;
+	qboolean anytranslucent;
+
+	if (check < 0)
+	{
+		check = getenv("MISTER_HYBRID_MODELCHECK") && atoi(getenv("MISTER_HYBRID_MODELCHECK"));
+	}
+	if (!check)
+	{
+		return R_DrawEntitiesOnList(translucent);
+	}
+
+	n = vid_buffer_width * vid_buffer_height;
+	if (size != n)
+	{
+		free(frame_before);
+		free(frame_jobs);
+		free(z_before);
+		free(z_jobs);
+		frame_before = malloc(n);
+		frame_jobs = malloc(n);
+		z_before = malloc(n * sizeof(zvalue_t));
+		z_jobs = malloc(n * sizeof(zvalue_t));
+		size = n;
+	}
+
+	memcpy(frame_before, vid_buffer, n);
+	memcpy(z_before, d_pzbuffer, n * sizeof(zvalue_t));
+	zregion[0] = vid_zminu;
+	zregion[1] = vid_zminv;
+	zregion[2] = vid_zmaxu;
+	zregion[3] = vid_zmaxv;
+
+	R_DrawEntitiesOnList(translucent);
+
+	memcpy(frame_jobs, vid_buffer, n);
+	memcpy(z_jobs, d_pzbuffer, n * sizeof(zvalue_t));
+	memcpy(vid_buffer, frame_before, n);
+	memcpy(d_pzbuffer, z_before, n * sizeof(zvalue_t));
+	vid_zminu = zregion[0];
+	vid_zminv = zregion[1];
+	vid_zmaxu = zregion[2];
+	vid_zmaxv = zregion[3];
+
+	anytranslucent = R_DrawEntitiesOnListPass(translucent);
+
+	for (i = 0; i < n; i++)
+	{
+		wrong += frame_jobs[i] != vid_buffer[i];
+		wrong += z_jobs[i] != d_pzbuffer[i];
+		pixels += frame_jobs[i] != frame_before[i];
+	}
+	passes++;
+
+	if ((r_framecount & 255) == 0 && !translucent)
+	{
+		Com_Printf("modelcheck: %llu passes, %llu pixels drawn, %llu wrong\n",
+			passes, pixels, wrong);
+	}
+
+	return anytranslucent;
+}
+#define R_DrawEntitiesOnList R_DrawEntitiesOnListChecked
+#endif
 
 
 /*
@@ -1525,6 +1638,14 @@ RE_BeginFrame(float camera_separation)
 		RE_SetMode();
 	}
 
+#ifdef MISTER_HYBRID
+	/* The OSD's "Resolution" applies at once */
+	if (MiSTer_GameHeight() != vid.height)
+	{
+		RE_SetMode();
+	}
+#endif
+
 	/*
 	** rebuild the gamma correction palette if necessary
 	*/
@@ -1557,6 +1678,21 @@ RE_SetMode(void)
 	fullscreen = (int)vid_fullscreen->value;
 
 	r_vsync->modified = false;
+
+#ifdef MISTER_HYBRID
+	/* The window is the core's screen and its size the core's
+	   video mode: 320x200 or 320x240, the OSD's "Resolution" */
+	vid.width = 320;
+	vid.height = MiSTer_GameHeight();
+
+	if (SWimp_SetMode(&vid.width, &vid.height, -1, 0) != rserr_ok)
+	{
+		return false;
+	}
+
+	sw_state.prev_mode = 4;
+	return true;
+#endif
 
 	/* a bit hackish approach to enable custom resolutions:
 	   Glimp_SetMode needs these values set for mode -1 */
@@ -1782,6 +1918,11 @@ R_DrawBeam(const entity_t *e)
 static SDL_Window	*window = NULL;
 static SDL_Texture	*texture = NULL;
 static SDL_Renderer	*renderer = NULL;
+#ifdef MISTER_HYBRID
+/* The window's own surface, 8 bit, and the palette it was given last */
+static SDL_Surface	*window_surface = NULL;
+static unsigned char	window_palette[256 * 4];
+#endif
 
 /*
 ============
@@ -1874,6 +2015,11 @@ RE_Draw_StretchRawColor(int x, int y, int w, int h, int cols, int rows,
 
 	/* Copy to original buffers */
 	RE_Draw_StretchRaw(x, y, w, h, cols, rows, data, bits);
+
+#ifdef MISTER_HYBRID
+	/* The picture is 8 bit with the core's palette: no high colour frames */
+	return;
+#endif
 
 	if (bits != 32 || x || y ||
 		(w != vid_buffer_width) ||
@@ -2015,6 +2161,28 @@ RE_InitContext(void *win)
 	snprintf(title, sizeof(title), "Yamagi Quake II %s - Soft Render", YQ2VERSION);
 	SDL_SetWindowTitle(window, title);
 
+#ifdef MISTER_HYBRID
+	/* The 8 bit picture goes to the core as it is, through a paletted
+	   window surface: the FPGA looks the colours up (hybrid/sdl2). */
+	SDL_SetHint("SDL_MISTER_VIDEO_FORMAT", "INDEX8");
+	window_surface = SDL_GetWindowSurface(window);
+
+	if (!window_surface || !window_surface->format->palette)
+	{
+		Com_Printf("Can't get an 8 bit window surface: %s\n", SDL_GetError());
+		return false;
+	}
+
+	vid_buffer_height = vid.height;
+	vid_buffer_width = vid.width;
+	memset(window_palette, 0, sizeof(window_palette));
+
+	R_InitGraphics(vid_buffer_width, vid_buffer_height);
+	SWimp_CreateRender(vid_buffer_width, vid_buffer_height);
+
+	return true;
+#endif
+
 	if (r_vsync->value)
 	{
 #ifdef USE_SDL3
@@ -2107,6 +2275,10 @@ RE_InitContext(void *win)
  */
 void RE_GetDrawableSize(int* width, int* height)
 {
+#ifdef MISTER_HYBRID
+	SDL_GetWindowSize(window, width, height);
+	return;
+#endif
 #ifdef USE_SDL3
 	SDL_GetCurrentRenderOutputSize(renderer, width, height);
 #else
@@ -2217,6 +2389,11 @@ RE_ShutdownContext(void)
 		free(r_warpbuffer);
 	}
 	r_warpbuffer = NULL;
+
+#ifdef MISTER_HYBRID
+	/* belongs to the window */
+	window_surface = NULL;
+#endif
 
 	if (texture)
 	{
@@ -2339,6 +2516,15 @@ RE_CleanFrame(void)
 	memset(swap_buffers, 0,
 		vid_buffer_height * vid_buffer_width * sizeof(pixel_t) * 2);
 
+#ifdef MISTER_HYBRID
+	if (window_surface)
+	{
+		memset(window_surface->pixels, 0, window_surface->pitch * window_surface->h);
+	}
+	VID_NoDamageBuffer();
+	return;
+#endif
+
 #ifdef USE_SDL3
 	if (!SDL_LockTexture(texture, NULL, (void**)&pixels, &pitch))
 #else
@@ -2356,6 +2542,51 @@ RE_CleanFrame(void)
 	// All changes flushed
 	VID_NoDamageBuffer();
 }
+
+#ifdef MISTER_HYBRID
+/* The whole frame and, if it changed, the palette go to the core */
+static void
+RE_FlushFrameMiSTer(void)
+{
+	int y, w, h;
+
+	if (memcmp(window_palette, sw_state.currentpalette, sizeof(window_palette)) != 0)
+	{
+		SDL_Color colors[256];
+		int i;
+
+		memcpy(window_palette, sw_state.currentpalette, sizeof(window_palette));
+
+		for (i = 0; i < 256; i++)
+		{
+			colors[i].r = window_palette[i * 4 + 2];
+			colors[i].g = window_palette[i * 4 + 1];
+			colors[i].b = window_palette[i * 4 + 0];
+			colors[i].a = 255;
+		}
+
+		SDL_SetPaletteColors(window_surface->format->palette, colors, 0, 256);
+	}
+
+	w = Q_min(vid_buffer_width, window_surface->w);
+	h = Q_min(vid_buffer_height, window_surface->h);
+
+	for (y = 0; y < h; y++)
+	{
+		memcpy((byte *)window_surface->pixels + y * window_surface->pitch,
+			vid_buffer + y * vid_buffer_width, w);
+	}
+
+	SDL_UpdateWindowSurface(window);
+
+	// replace use next buffer
+	swap_current ++;
+	vid_buffer = swap_frames[swap_current&1];
+
+	/* All changes flushed */
+	VID_NoDamageBuffer();
+}
+#endif
 
 static void
 RE_FlushFrame(int vmin, int vmax)
@@ -2436,6 +2667,15 @@ static void
 RE_EndFrame(void)
 {
 	int vmin, vmax;
+
+#ifdef MISTER_HYBRID
+	/* Every frame is shown: the core paces the game by them */
+	if (window_surface)
+	{
+		RE_FlushFrameMiSTer();
+	}
+	return;
+#endif
 
 	// fix possible issue with min/max
 	if (vid_minu < 0)

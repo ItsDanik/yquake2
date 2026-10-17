@@ -505,7 +505,7 @@ D_DrawSpan
 =============
 */
 static pixel_t *
-D_DrawSpan(pixel_t *pdest, const pixel_t *pbase, int s, int t, int sstep, int tstep, int spancount)
+D_DrawSpan(pixel_t *pdest, const pixel_t *pbase, int cachewidth, int s, int t, int sstep, int tstep, int spancount)
 {
 	const pixel_t *tdest_max = pdest + spancount;
 
@@ -553,7 +553,7 @@ D_DrawSpanFiltered
 =============
 */
 static pixel_t *
-D_DrawSpanFiltered(pixel_t *pdest, pixel_t *pbase, int s, int t, int sstep, int tstep, int spancount,
+D_DrawSpanFiltered(pixel_t *pdest, const pixel_t *pbase, int cachewidth, int s, int t, int sstep, int tstep, int spancount,
 	   const espan_t *pspan)
 {
 	do
@@ -586,29 +586,80 @@ D_DrawSpanFiltered(pixel_t *pdest, pixel_t *pbase, int s, int t, int sstep, int 
 
 /*
 =============
-D_DrawSpansPow2
+D_DivSpan
+
+x / n as C has it (truncated), for the step of the last part of a span. The
+ARM of the MiSTer has no division instruction: for the parts of up to 16
+pixels a multiplication with ceil(2^32 / n) gives the same quotient, as
+|x| < 2^28 (s and t are clamped to the surface's extents in 16.16).
 =============
 */
-void
-D_DrawSpansPow2 (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zistepv)
+#define D_RECIP(n) (0xFFFFFFFFu / (n) + 1)
+static const unsigned d_span_recip[17] = {
+	0, 0, D_RECIP(2), D_RECIP(3), D_RECIP(4), D_RECIP(5), D_RECIP(6), D_RECIP(7), D_RECIP(8),
+	D_RECIP(9), D_RECIP(10), D_RECIP(11), D_RECIP(12), D_RECIP(13), D_RECIP(14), D_RECIP(15), D_RECIP(16)
+};
+
+static inline int
+D_DivSpan(int x, int n)
 {
+	if (n == 1)
+	{
+		return x;
+	}
+	if (n > 16)
+	{
+		return x / n;
+	}
+	if (x >= 0)
+	{
+		return (int)(((unsigned long long)(unsigned)x * d_span_recip[n]) >> 32);
+	}
+	return -(int)(((unsigned long long)(unsigned)-x * d_span_recip[n]) >> 32);
+}
+
+/*
+=============
+D_DrawSpansParms
+
+The texture of a list of spans, from what D_CalcGradients and
+D_DrawSpanGetStep worked out: on either thread (sw_jobs.c), so nothing here
+reads the renderer's globals.
+=============
+*/
+typedef struct
+{
+	espan_t	*spans;
+	const pixel_t	*pbase;
+	pixel_t	*viewbuffer;
+	int	width, cachewidth;
+	float	sdivzorigin, tdivzorigin, ziorigin;
+	float	sdivzstepu, tdivzstepu, zistepu;
+	float	sdivzstepv, tdivzstepv, zistepv;
+	int	sadjust, tadjust, bbextents, bbextentt;
+	int	spanstep_shift;
+	qboolean	filtering;
+} spanparms_t;
+
+static void
+D_DrawSpansParms(const spanparms_t *p)
+{
+	espan_t	*pspan = p->spans;
 	int 	spancount;
-	pixel_t	*pbase;
+	const pixel_t	*pbase = p->pbase;
 	int	snext, tnext;
 	float	spancountminus1;
 	float	sdivzpow2stepu, tdivzpow2stepu, zipow2stepu;
-	int	texture_filtering;
 	int	spanstep_shift, spanstep_value;
+	const int	sadjust = p->sadjust, tadjust = p->tadjust;
+	const int	bbextents = p->bbextents, bbextentt = p->bbextentt;
 
-	spanstep_shift = D_DrawSpanGetStep(d_zistepu, d_zistepv);
+	spanstep_shift = p->spanstep_shift;
 	spanstep_value = (1 << spanstep_shift);
 
-	pbase = (unsigned char *)cacheblock;
-
-	texture_filtering = (int)sw_texture_filtering->value;
-	sdivzpow2stepu = d_sdivzstepu * spanstep_value;
-	tdivzpow2stepu = d_tdivzstepu * spanstep_value;
-	zipow2stepu = d_zistepu * spanstep_value;
+	sdivzpow2stepu = p->sdivzstepu * spanstep_value;
+	tdivzpow2stepu = p->tdivzstepu * spanstep_value;
+	zipow2stepu = p->zistepu * spanstep_value;
 
 	do
 	{
@@ -616,7 +667,7 @@ D_DrawSpansPow2 (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zist
 		int	count, s, t;
 		float	sdivz, tdivz, zi, z, du, dv;
 
-		pdest = d_viewbuffer + (vid_buffer_width * pspan->v) + pspan->u;
+		pdest = p->viewbuffer + (p->width * pspan->v) + pspan->u;
 
 		count = pspan->count;
 
@@ -624,9 +675,9 @@ D_DrawSpansPow2 (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zist
 		du = (float)pspan->u;
 		dv = (float)pspan->v;
 
-		sdivz = d_sdivzorigin + dv*d_sdivzstepv + du*d_sdivzstepu;
-		tdivz = d_tdivzorigin + dv*d_tdivzstepv + du*d_tdivzstepu;
-		zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
+		sdivz = p->sdivzorigin + dv*p->sdivzstepv + du*p->sdivzstepu;
+		tdivz = p->tdivzorigin + dv*p->tdivzstepv + du*p->tdivzstepu;
+		zi = p->ziorigin + dv*p->zistepv + du*p->zistepu;
 		z = (float)SHIFT16XYZ_MULT / zi;	// prescale to 16.16 fixed-point
 
 		s = (int)(sdivz * z) + sadjust;
@@ -691,9 +742,9 @@ D_DrawSpansPow2 (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zist
 				// span by division, biasing steps low so we don't run off the
 				// texture
 				spancountminus1 = (float)(spancount - 1);
-				sdivz += d_sdivzstepu * spancountminus1;
-				tdivz += d_tdivzstepu * spancountminus1;
-				zi += d_zistepu * spancountminus1;
+				sdivz += p->sdivzstepu * spancountminus1;
+				tdivz += p->tdivzstepu * spancountminus1;
+				zi += p->zistepu * spancountminus1;
 				z = (float)SHIFT16XYZ_MULT / zi;	// prescale to 16.16 fixed-point
 				snext = (int)(sdivz * z) + sadjust;
 				if (snext > bbextents)
@@ -713,20 +764,20 @@ D_DrawSpansPow2 (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zist
 
 				if (spancount > 1)
 				{
-					sstep = (snext - s) / (spancount - 1);
-					tstep = (tnext - t) / (spancount - 1);
+					sstep = D_DivSpan(snext - s, spancount - 1);
+					tstep = D_DivSpan(tnext - t, spancount - 1);
 				}
 			}
 
 			// Drawing phrase
-			if ((texture_filtering == 0) || fastmoving)
+			if (!p->filtering)
 			{
-				pdest = D_DrawSpan(pdest, pbase, s, t, sstep, tstep,
+				pdest = D_DrawSpan(pdest, pbase, p->cachewidth, s, t, sstep, tstep,
 						   spancount);
 			}
 			else
 			{
-				pdest = D_DrawSpanFiltered(pdest, pbase, s, t, sstep, tstep,
+				pdest = D_DrawSpanFiltered(pdest, pbase, p->cachewidth, s, t, sstep, tstep,
 						   spancount, pspan);
 			}
 			s = snext;
@@ -734,6 +785,302 @@ D_DrawSpansPow2 (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zist
 		} while (count > 0);
 
 	} while ((pspan = pspan->pnext) != NULL);
+}
+
+/* The renderer's state for D_DrawSpansParms */
+static void
+D_GetSpanParms(spanparms_t *p, espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zistepv)
+{
+	p->spans = pspan;
+	p->pbase = (const pixel_t *)cacheblock;
+	p->cachewidth = cachewidth;
+	p->viewbuffer = d_viewbuffer;
+	p->width = vid_buffer_width;
+	p->sdivzorigin = d_sdivzorigin;
+	p->tdivzorigin = d_tdivzorigin;
+	p->ziorigin = d_ziorigin;
+	p->sdivzstepu = d_sdivzstepu;
+	p->tdivzstepu = d_tdivzstepu;
+	p->zistepu = d_zistepu;
+	p->sdivzstepv = d_sdivzstepv;
+	p->tdivzstepv = d_tdivzstepv;
+	p->zistepv = d_zistepv;
+	p->sadjust = sadjust;
+	p->tadjust = tadjust;
+	p->bbextents = bbextents;
+	p->bbextentt = bbextentt;
+	p->spanstep_shift = D_DrawSpanGetStep(d_zistepu, d_zistepv);
+	p->filtering = (int)sw_texture_filtering->value && !fastmoving;
+}
+
+/*
+=============
+D_DrawSpansPow2
+=============
+*/
+void
+D_DrawSpansPow2 (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zistepv)
+{
+	spanparms_t parms;
+
+	D_GetSpanParms(&parms, pspan, d_ziorigin, d_zistepu, d_zistepv);
+	D_DrawSpansParms(&parms);
+}
+
+/*
+=============
+D_MarkZSpans
+
+The part of D_DrawZSpans that keeps track of what was written to the z buffer
+(VID_DamageZBuffer): which spans get their z, in the order they come. On this
+thread; D_DrawZSpansParms writes them, on either.
+=============
+*/
+static void
+D_MarkZSpans (espan_t *pspan)
+{
+	do
+	{
+		pspan->zwrite = VID_CheckDamageZBuffer(pspan->u, pspan->v, pspan->count, 0);
+
+		if (pspan->zwrite)
+		{
+			// solid map walls damage
+			VID_DamageZBuffer(pspan->u, pspan->v);
+			VID_DamageZBuffer(pspan->u + pspan->count, pspan->v);
+		}
+	} while ((pspan = pspan->pnext) != NULL);
+}
+
+/*
+=============
+D_DrawZSpansParms
+
+D_DrawZSpans for the spans D_MarkZSpans marked
+=============
+*/
+static void
+D_DrawZSpansParms (const espan_t *pspan, zvalue_t *zbuffer, int width,
+	float d_ziorigin, float d_zistepu, float d_zistepv)
+{
+	zvalue_t	izistep;
+	int		safe_step;
+
+	// FIXME: check for clamping/range problems
+	// we count on FP exceptions being turned off to avoid range problems
+	izistep = (int)(d_zistepu * 0x8000 * (float)SHIFT16XYZ_MULT);
+	safe_step = D_DrawZSpanGetStepValue(izistep);
+
+	do
+	{
+		int		count;
+		zvalue_t	izi;
+		zvalue_t	*pdest;
+		float		zi;
+		float		du, dv;
+
+		if (!pspan->zwrite)
+		{
+			continue;
+		}
+
+		pdest = zbuffer + (width * pspan->v) + pspan->u;
+
+		count = pspan->count;
+
+		// calculate the initial 1/z
+		du = (float)pspan->u;
+		dv = (float)pspan->v;
+
+		zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
+		// we count on FP exceptions being turned off to avoid range problems
+		izi = (int)(zi * 0x8000 * (float)SHIFT16XYZ_MULT);
+
+		if (safe_step > 1)
+		{
+			const zvalue_t *tdest_max = pdest + count;
+			do
+			{
+				int	step;
+				zvalue_t izi_shifted = izi >> SHIFT16XYZ;
+
+				for(step = 0; (step < safe_step) && (pdest < tdest_max); step++)
+				{
+					*pdest++ = izi_shifted;
+				}
+				izi += (izistep * safe_step);
+			} while (pdest < tdest_max);
+		}
+		else
+		{
+			while (count > 0)
+			{
+				*pdest++ = izi >> SHIFT16XYZ;
+				izi += izistep;
+				count--;
+			}
+		}
+	} while ((pspan = pspan->pnext) != NULL);
+}
+
+typedef struct
+{
+	spanparms_t	spans;
+	zvalue_t	*zbuffer;
+	qboolean	build;
+	drawsurf_t	drawsurf;
+} solidjob_t;
+
+_Static_assert(sizeof(solidjob_t) <= RJOB_ARG_SIZE, "solidjob_t does not fit a job");
+
+static void
+D_SolidSpansJob(const void *arg)
+{
+	solidjob_t job = *(const solidjob_t *)arg;
+
+	if (job.build)
+	{
+		D_BuildSurface(&job.drawsurf);
+	}
+	D_DrawSpansParms(&job.spans);
+	D_DrawZSpansParms(job.spans.spans, job.zbuffer, job.spans.width,
+		job.spans.ziorigin, job.spans.zistepu, job.spans.zistepv);
+}
+
+/*
+=============
+D_DrawSolidSpans
+
+D_DrawSpansPow2 and D_DrawZSpans as a job (sw_jobs.c), with the drawing of
+the surface's cache block first if build is not NULL: between R_JobsBegin and R_JobsFinish
+this is done at some time before those return, on either thread. The spans
+and the surface's cache block must stay as they are until then.
+=============
+*/
+#ifdef MISTER_HYBRID
+/*
+ * MISTER_HYBRID_SPANCHECK=1, a test: once the jobs are done, before anything
+ * changes a cache block (D_CacheSurface) and after the last of a
+ * D_DrawSurfaces, every surface is drawn again on this thread into a buffer
+ * of its own and compared with what the jobs drew. That would differ if a
+ * surface's cache block had changed before its job was done with it. D_DivSpan is compared with the
+ * division once, at the start.
+ */
+#define CHECK_MAX 4096
+static int check_on = -1;
+static spanparms_t check_list[CHECK_MAX];
+static int check_count;
+static pixel_t *check_buffer;
+static zvalue_t *check_zbuffer;
+static int check_size;
+static unsigned long long check_pixels, check_wrong, check_surfaces;
+
+static void
+D_CheckDivSpan(void)
+{
+	unsigned long long wrong = 0, n = 0;
+	int d, x;
+
+	for (d = 1; d <= 16; d++)
+	{
+		for (x = -(1 << 28) + 1; x < (1 << 28); x += 997)
+		{
+			wrong += D_DivSpan(x, d) != x / d;
+			wrong += D_DivSpan(x + d - 1, d) != (x + d - 1) / d;
+			n += 2;
+		}
+	}
+	Com_Printf("spancheck: D_DivSpan %llu of %llu quotients wrong\n", wrong, n);
+}
+
+void
+D_CheckSolidSpans(qboolean report)
+{
+	int i;
+
+	if (check_on <= 0)
+	{
+		return;
+	}
+
+	if (check_size != vid_buffer_width * vid_buffer_height)
+	{
+		check_size = vid_buffer_width * vid_buffer_height;
+		free(check_buffer);
+		free(check_zbuffer);
+		check_buffer = malloc(check_size);
+		check_zbuffer = malloc(check_size * sizeof(zvalue_t));
+	}
+
+	for (i = 0; i < check_count; i++)
+	{
+		spanparms_t p = check_list[i];
+		const espan_t *span;
+
+		p.viewbuffer = check_buffer;
+		D_DrawSpansParms(&p);
+		D_DrawZSpansParms(p.spans, check_zbuffer, p.width, p.ziorigin, p.zistepu, p.zistepv);
+
+		for (span = p.spans; span; span = span->pnext)
+		{
+			int o = span->v * p.width + span->u, k;
+
+			for (k = 0; k < span->count; k++)
+			{
+				check_wrong += check_buffer[o + k] != check_list[i].viewbuffer[o + k];
+				if (span->zwrite)
+				{
+					check_wrong += check_zbuffer[o + k] != d_pzbuffer[o + k];
+				}
+			}
+			check_pixels += span->count;
+		}
+	}
+
+	check_surfaces += check_count;
+	check_count = 0;
+
+	if (report && (r_framecount & 255) == 0)
+	{
+		Com_Printf("spancheck: %llu surfaces, %llu pixels, %llu wrong\n",
+			check_surfaces, check_pixels, check_wrong);
+	}
+}
+#endif
+
+void
+D_DrawSolidSpans (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zistepv,
+	const drawsurf_t *build)
+{
+	solidjob_t job;
+	spanparms_t parms;
+
+	D_GetSpanParms(&parms, pspan, d_ziorigin, d_zistepu, d_zistepv);
+#ifdef MISTER_HYBRID
+	if (check_on < 0)
+	{
+		check_on = getenv("MISTER_HYBRID_SPANCHECK") && atoi(getenv("MISTER_HYBRID_SPANCHECK"));
+		if (check_on)
+		{
+			D_CheckDivSpan();
+		}
+	}
+	if (check_on > 0 && check_count < CHECK_MAX)
+	{
+		check_list[check_count++] = parms;
+	}
+#endif
+	// which spans write their z is worked out here, in order
+	D_MarkZSpans(pspan);
+
+	job.spans = parms;
+	job.zbuffer = d_pzbuffer;
+	job.build = build != NULL;
+	if (build)
+	{
+		job.drawsurf = *build;
+	}
+	R_JobAdd(D_SolidSpansJob, &job, sizeof(job));
 }
 
 /*

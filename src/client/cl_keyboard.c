@@ -1208,6 +1208,124 @@ Key_Bindlist_f(void)
 	}
 }
 
+#ifdef MISTER_HYBRID
+/*
+ * The core's default controls (README.md, "Controls"). A config keeps the
+ * bindings, so the layout has a number: when it is newer than the one the
+ * config was written with, the gamepad gets the new defaults once (all its
+ * buttons), and so do the keys and mouse buttons of the list below; the
+ * other keys keep what default.cfg or the player gave them. The player's own
+ * changes after that are kept. Raise MISTER_LAYOUT with new defaults.
+ */
+#define MISTER_LAYOUT 2
+
+void
+Key_MiSTerLayout(void)
+{
+	static const struct {
+		int key;
+		char *binding;
+	} pad[] = {
+		{ K_BTN_SOUTH, "+moveup" },	// A: jump, swim up
+		{ K_BTN_EAST, "+movedown" },	// B: crouch, swim down
+		{ K_BTN_WEST, "inven" },	// X: the inventory
+		{ K_BTN_NORTH, "invuse" },	// Y: use the selected item
+		{ K_SHOULDER_LEFT, "+speed" },	// L: walk while held (cl_run is on)
+		{ K_TRIG_LEFT, "+speed" },	// L2, as L
+		{ K_SHOULDER_RIGHT, "+attack" },	// R
+		{ K_TRIG_RIGHT, "+attack" },	// R2, as R
+		{ K_BTN_BACK, "cmd help" },	// Select: the field computer
+		{ K_STICK_LEFT, "invdrop" },	// L3
+		{ K_DPAD_LEFT, "weapprev" },
+		{ K_DPAD_RIGHT, "weapnext" },
+		{ K_DPAD_UP, "invprev" },
+		{ K_DPAD_DOWN, "invnext" },
+	};
+	static const struct {
+		char *key;
+		char *binding;
+	} keys[] = {
+		{ "w", "+forward" },
+		{ "a", "+moveleft" },
+		{ "s", "+back" },
+		{ "d", "+moveright" },
+		{ "SPACE", "+moveup" },
+		{ "CTRL", "+movedown" },
+		{ "SHIFT", "+speed" },	// walk while held
+		{ "MOUSE1", "+attack" },
+	};
+	/* The number keys: in Quake II "use <weapon>", which the inventory shows
+	   as the weapon's hotkey; in a mission pack the key also takes the pack's
+	   weapons of that place (as in yquake2's quickswitch groups), pressed
+	   again it switches between them */
+	static const struct {
+		char *key;
+		char *weapon;
+		char *pack;
+	} weapons[] = {
+		{ "1", "Blaster", "weapon_blaster weapon_chainfist" },
+		{ "2", "Shotgun", "weapon_shotgun" },
+		{ "3", "Super Shotgun", "weapon_supershotgun" },
+		{ "4", "Machinegun", "weapon_machinegun weapon_etf_rifle" },
+		{ "5", "Chaingun", "weapon_chaingun" },
+		{ "6", "Grenades", "ammo_grenades ammo_tesla ammo_trap" },
+		{ "7", "Grenade Launcher", "weapon_grenadelauncher weapon_proxlauncher" },
+		{ "8", "Rocket Launcher", "weapon_rocketlauncher weapon_phalanx" },
+		{ "9", "HyperBlaster", "weapon_hyperblaster weapon_boomer weapon_plasmabeam" },
+		{ "0", "Railgun", "weapon_railgun" },
+		{ "-", "BFG10K", "weapon_bfg weapon_disintegrator" },
+	};
+	/* the folder the game reads its config from: "game" is still latched */
+	const char *dir = strrchr(FS_Gamedir(), '/');
+	qboolean pack = dir && Q_stricmp(dir + 1, BASEDIRNAME) != 0;
+	char binding[128];
+	cvar_t *layout = Cvar_Get("mister_padlayout", "0", CVAR_ARCHIVE);
+	int i;
+
+	if (layout->value >= MISTER_LAYOUT)
+	{
+		return;
+	}
+
+	for (i = K_JOY_FIRST_BTN; i < K_LAST; i++)
+	{
+		if (keybindings[i])
+		{
+			Key_SetBinding(i, "");
+		}
+	}
+
+	for (i = 0; i < sizeof(pad) / sizeof(pad[0]); i++)
+	{
+		Key_SetBinding(pad[i].key, pad[i].binding);
+	}
+
+	for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+	{
+		Key_SetBinding(Key_StringToKeynum(keys[i].key), keys[i].binding);
+	}
+
+	for (i = 0; i < sizeof(weapons) / sizeof(weapons[0]); i++)
+	{
+		Com_sprintf(binding, sizeof(binding), pack ? "cycleweap %s" : "use %s",
+			pack ? weapons[i].pack : weapons[i].weapon);
+		Key_SetBinding(Key_StringToKeynum(weapons[i].key), binding);
+	}
+
+	/* the mouse always looks */
+	Cvar_SetValue("freelook", 1);
+
+	/* The first start: always run, as a stick pushed all the way
+	   is meant to (Options, "always run", turns it off) */
+	if (layout->value < 1)
+	{
+		Cvar_SetValue("cl_run", 1);
+	}
+
+	Cvar_SetValue("mister_padlayout", MISTER_LAYOUT);
+}
+#endif
+
 void
 Key_Init(void)
 {
