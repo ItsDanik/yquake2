@@ -491,6 +491,12 @@ Sys_GetGameAPI(void *parms)
 		{
 			Com_Printf("Loading library: %s\n: ", name);
 
+#ifdef MISTER_HYBRID
+			/* one in a folder on a USB drive (noexec) cannot be loaded: the
+			   next path has ours, on the SD card */
+			Com_Printf("%s\n", dlerror());
+			continue;
+#else
 			path = (char *)dlerror();
 			str_p = strchr(path, ':');   /* skip the path (already shown) */
 
@@ -506,6 +512,7 @@ Sys_GetGameAPI(void *parms)
 			Com_Printf("%s\n", str_p);
 
 			return NULL;
+#endif
 		}
 	}
 

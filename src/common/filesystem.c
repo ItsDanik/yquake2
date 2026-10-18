@@ -1899,7 +1899,16 @@ FS_BuildGameSpecificSearchPath(const char *dir)
 
 		// fs_gamedir must be reset to the last
 		// dir of the generic search path.
+#ifdef MISTER_HYBRID
+		/* the last raw path, which the generic search path added last */
+		fsRawPath_t *last = fs_rawPath;
+		while (last->next != NULL) {
+			last = last->next;
+		}
+		Com_sprintf(path, sizeof(path), "%s/%s", last->path, BASEDIRNAME);
+#else
 		Com_sprintf(path, sizeof(path), "%s/%s", fs_rawPath->path, BASEDIRNAME);
+#endif
 		Q_strlcpy(fs_gamedir, path, sizeof(fs_gamedir));
 	} else {
 		Cvar_FullSet("gamedir", dir, CVAR_SERVERINFO | CVAR_NOSET);
@@ -2026,6 +2035,17 @@ FS_BuildRawPath(void)
 			FS_AddDirToRawPath(homedir, true, true);
 		}
 	}
+
+#ifdef MISTER_HYBRID
+	/* The data may be on a USB drive (the current dir, the launch script's
+	   DATADIR) while the program and the game libraries stay on the SD card
+	   (USB drives are mounted noexec). Portable, the data dir is added
+	   before the binary dir: it is searched first and is the one written to
+	   (the last of the generic search path), the binary dir after it. */
+	if (is_portable) {
+		FS_AddDirToRawPath(datadir, false, true);
+	}
+#endif
 
 	// Add binary dir. Required, because the renderer
 	// libraries are loaded from it.
