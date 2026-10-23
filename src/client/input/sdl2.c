@@ -2397,8 +2397,14 @@ Controller_Rumble(const char *name, vec3_t source, qboolean from_player,
 	vec_t intens = 0.0f, low_freq = 1.0f, hi_freq = 1.0f, dist_prop;
 	unsigned short int max_distance = 4;
 	unsigned int effect_volume;
+#ifdef MISTER_HYBRID
+	/* the OSD's Rumble, not the cvar (whose slider the menu leaves out) */
+	const float magnitude = MiSTer_Rumble();
+#else
+	const float magnitude = joy_haptic_magnitude->value;
+#endif
 
-	if (!show_haptic || !controller || joy_haptic_magnitude->value <= 0
+	if (!show_haptic || !controller || magnitude <= 0
 		|| volume == 0 || duration == 0)
 	{
 		return;
@@ -2529,7 +2535,7 @@ Controller_Rumble(const char *name, vec3_t source, qboolean from_player,
 		hi_freq *= 0.7;
 	}
 
-	effect_volume = joy_haptic_magnitude->value * intens * dist_prop * volume;
+	effect_volume = magnitude * intens * dist_prop * volume;
 	low_freq = Q_min(effect_volume * low_freq, USHRT_MAX);
 	hi_freq = Q_min(effect_volume * hi_freq, USHRT_MAX);
 

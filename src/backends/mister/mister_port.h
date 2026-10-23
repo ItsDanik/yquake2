@@ -71,6 +71,10 @@ int MiSTer_GameHeight(void);
 // row the top HUD starts at and the one the bottom HUD ends at. 0 and
 // `height` in 200 rows (the HUD lines are greyed out then). Read every frame.
 void MiSTer_HudRows(int height, int *top, int *bottom);
+// OSD "Rumble", read with every rumble: the strength of yquake2's controller
+// rumble (Controller_Rumble() in client/input/sdl2.c), the range of its
+// joy_haptic_magnitude, which it replaces: 1 On, 2 Strong, 0 Off.
+float MiSTer_Rumble(void);
 // The OSD's Cheats page, once a frame: the MISTER_CHEAT_* switches that are
 // on, and the triggers selected since the last call (MH_OSDTriggers(): from
 // one place only). `level`: 0 while no level of a single player game runs,

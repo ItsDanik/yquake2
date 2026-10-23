@@ -41,8 +41,18 @@ int MiSTer_GameHeight(void)
     return MH_IsOpen() && MH_OSD_GAME_BITS(MH_OSDStatus(), 24, 1) ? 240 : 200;
 }
 
-// "D0P1O[81:77],HUD (Top)" and "D0P1O[86:82],HUD (Bottom)" (CRT Options),
-// greyed out with mask bit 0 while the game is in 320x200 (HudLines()).
+// "O[30:29],Rumble,On,Strong,Off;"
+float MiSTer_Rumble(void)
+{
+    static const float level[4] = { 1.0f, 2.0f, 0.0f, 0.0f };
+
+    return MH_IsOpen() ? level[MH_OSD_GAME_BITS(MH_OSDStatus(), 29, 2)] : 0.0f;
+}
+
+// "D0D8P1O[86:82],HUD (Bottom)" (CRT Options), greyed out with mask bit 0
+// while the game is in 320x200 (HudLines()). Quake II's margin is the bottom
+// one (Danik, 2026-10-21): "D0D7P1O[81:77],HUD (Top)" is always greyed out
+// (HUD_EDGES in core/YQuake2.sv) and the top row is the screen's edge.
 // MISTER_HYBRID_HUD=<top>,<bottom> fixes them for a test (the library).
 void MiSTer_HudRows(int height, int *top, int *bottom)
 {
@@ -53,7 +63,6 @@ void MiSTer_HudRows(int height, int *top, int *bottom)
     if (height < 240 || !MH_IsOpen())
         return;
     MH_HudMargins(&t, &b);
-    *top = t;
     *bottom = height - b;
 }
 
@@ -313,8 +322,10 @@ void MiSTer_ShowError(const char *message)
 // with its data and our build of its game library (game.so, which the
 // package has: it says nothing). The full game and the demo both have
 // baseq2/pak0.pak, the demo's 50MB, the full game's (CD, Steam, GOG) 180MB:
-// told apart by its size (FullGame()). The mission packs need the full game.
-// Messages: 4 lines of 71, %s the game's folder.
+// told apart by its size (FullGame()), and the one that is not there gets
+// MH_NOT_THERE. The mission packs need the full game. Messages: 4 lines of
+// 71, %s the game's folder.
+static const char *const BaseFiles[] = { "baseq2/pak0.pak", NULL };
 static const char *const PackFiles[][3] = {
     { "baseq2/pak0.pak", "xatrix/pak0.pak", NULL },
     { "baseq2/pak0.pak", "rogue/pak0.pak", NULL },
@@ -322,20 +333,20 @@ static const char *const PackFiles[][3] = {
 #define DEMO_PAK_MAX (100 * 1024 * 1024)
 static struct mh_game Games[] = {
     { "Q2", "Quake II", NULL, NULL,
-      "Quake II was not found. Copy pak0.pak, pak1.pak and pak2.pak of its folder "
-      "baseq2 (CD, Steam or GOG) into %s/baseq2/. The demo's pak0.pak works too." },
+      "Quake II was not found (baseq2/pak0.pak). Copy everything in the folder "
+      "baseq2 of Quake II (CD, Steam or GOG, or the demo) into %s/baseq2/." },
     { "DEMO", "Quake II Demo", NULL, "Q2", NULL },
     { "RK", "Q2: The Reckoning", PackFiles[0], NULL,
-      "The Reckoning was not found. It needs pak0.pak of the full Quake II in "
-      "baseq2/ and pak0.pak of the mission pack in xatrix/, both in %s/." },
+      "The Reckoning was not found. It needs the full Quake II (its folder baseq2 "
+      "with pak0.pak) and the mission pack's folder xatrix, both in %s/." },
     { "GZ", "Q2: Ground Zero", PackFiles[1], NULL,
-      "Ground Zero was not found. It needs pak0.pak of the full Quake II in "
-      "baseq2/ and pak0.pak of the mission pack in rogue/, both in %s/." },
+      "Ground Zero was not found. It needs the full Quake II (its folder baseq2 "
+      "with pak0.pak) and the mission pack's folder rogue, both in %s/." },
 };
 static const char *const GameDirs[] = { "baseq2", "baseq2", "xatrix", "rogue" };
 #define NUM_GAMES ((int)(sizeof(Games) / sizeof(Games[0])))
-#define NO_GAME "No game found. Copy pak0.pak, pak1.pak and pak2.pak of Quake II's folder " \
-                "baseq2 (CD, Steam or GOG, or the demo's pak0.pak) into %s/baseq2/."
+#define NO_GAME "No game found (baseq2/pak0.pak). Copy everything in the folder baseq2 of " \
+                "Quake II (CD, Steam or GOG, or the demo) into %s/baseq2/."
 
 // baseq2/pak0.pak: 1 of the full game, 0 of the demo, -1 none
 static int FullGame(void)
@@ -350,23 +361,23 @@ static int FullGame(void)
 int MiSTer_SelectGame(int *argc, char ***argv)
 {
     static char *args[64];
-    char text[MH_MSG_COLS + 1];
     int full, pick, i;
 
     if (!MH_Open())
         return 1;
     full = FullGame();
-    Games[0].files = full == 1 ? NULL : MH_NOT_THERE;
-    Games[1].files = full == 0 ? NULL : MH_NOT_THERE;
+    Games[0].files = full == 1 ? BaseFiles : MH_NOT_THERE;
+    Games[1].files = full == 0 ? BaseFiles : MH_NOT_THERE;
     for (i = 2; i < NUM_GAMES; i++) {
         if (full != 1)
             Games[i].files = MH_NOT_THERE;
     }
+    // "Checking Game Data...", then the game's logo with "Loading <title>..."
+    // come with the pick (MH_GameLogo(), host version 17); the demo has Quake
+    // II's logo
     pick = MH_PickGame(Games, NUM_GAMES, NULL, NO_GAME, &PickedFromList);
     if (pick < 0)
         return 0;
-    snprintf(text, sizeof(text), "Loading %s...", Games[pick].name);
-    MH_UI_Message(TITLE, text, 0);
     if (strcmp(GameDirs[pick], "baseq2") != 0 && *argc + 3 < (int)(sizeof(args) / sizeof(args[0]))) {
         memcpy(args, *argv, *argc * sizeof(char *));
         args[(*argc)++] = "+set";

@@ -2144,7 +2144,9 @@ Joy_MenuInit(void)
 		NULL
 	};
 
+#ifndef MISTER_HYBRID
 	extern qboolean show_haptic;
+#endif
 	unsigned short int y = 0;
 
 	s_joy_menu.x = (int)(viddef.width * 0.50f);
@@ -2258,7 +2260,12 @@ Joy_MenuInit(void)
 	s_joy_invertpitch_box.curvalue = (Cvar_VariableValue("joy_pitchspeed") < 0);
 	Menu_AddItem(&s_joy_menu, (void *)&s_joy_invertpitch_box);
 
+#ifdef MISTER_HYBRID
+	/* the OSD's Rumble sets it (MiSTer_Rumble()) */
+	if (false) {
+#else
 	if (show_haptic) {
+#endif
 		s_joy_haptic_slider.generic.type = MTYPE_SLIDER;
 		s_joy_haptic_slider.generic.x = 0;
 		s_joy_haptic_slider.generic.y = (y += 20);
