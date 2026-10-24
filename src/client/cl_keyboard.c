@@ -1209,6 +1209,13 @@ Key_Bindlist_f(void)
 }
 
 #ifdef MISTER_HYBRID
+static qboolean
+MiSTer_IsMenuPaddle(int key)
+{
+	return (key >= K_PADDLE_RIGHT_1 && key <= K_PADDLE_LEFT_2) ||
+		(key >= K_PADDLE_RIGHT_1_ALT && key <= K_PADDLE_LEFT_2_ALT);
+}
+
 /*
  * The core's default controls (README.md, "Controls"). A config keeps the
  * bindings, so the layout has a number: when it is newer than the one the
@@ -1539,6 +1546,11 @@ Key_Event(int key, qboolean down, qboolean special)
 
 	/* Key is unbound */
 	if ((key >= K_MOUSE1) && !keybindings[key] && (cls.key_dest != key_console) &&
+#ifdef MISTER_HYBRID
+		/* The paddles are Menu OK / Menu Back (Key_GetMenuKey()), which
+		   are on buttons that have game actions too: say nothing of them */
+		!MiSTer_IsMenuPaddle(key) &&
+#endif
 		(cls.state == ca_active))
 	{
 		Com_Printf("%s (%d) is unbound, hit F4 to set.\n", Key_KeynumToString(key), key);
